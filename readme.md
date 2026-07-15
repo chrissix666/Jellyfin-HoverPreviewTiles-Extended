@@ -1,8 +1,8 @@
 # Jellyfin Hover Preview Tiles Extended
 
-This is a fork and further development of the **[Jellyfin – Collection Preview](https://gist.github.com/malte9799/691a52da31f703d176d4f913c5de5fe4)** script by malte9799 on [Github](https://github.com/malte9799) and [reddit](https://www.reddit.com/user/Malte9799/), originally published as a GitHub Gist. **All credits goes to him!**
+This is a fork and further development of the **[Jellyfin – Collection Preview](https://gist.github.com/malte9799/691a52da31f703d176d4f913c5de5fe4)** Script by malte9799 on [Github](https://github.com/malte9799) and [reddit](https://www.reddit.com/user/Malte9799/), originally published as a GitHub Gist. **All credits goes to him!**
 
-Based on his JavaScript, a number of small improvements, adjustments & additions have been made:
+Based on his already very advanced Script, a number of small improvements, adjustments & additions have been made:
 
 - ...
 - ...
