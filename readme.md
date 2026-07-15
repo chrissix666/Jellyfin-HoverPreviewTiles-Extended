@@ -1,15 +1,17 @@
-# Jellyfin – HoverPreviewTiles (Extended)
+Jellyfin Hover Preview Tiles Extended
 
-This is a fork and further development of the **[Jellyfin – Collection Preview](https://gist.github.com/malte9799/691a52da31f703d176d4f913c5de5fe4)** script by **[malte9799](https://github.com/malte9799)** ([Reddit](https://www.reddit.com/user/Malte9799/)), originally published as a GitHub Gist.
+This is a fork and further development of the **[Jellyfin – Collection Preview](https://gist.github.com/malte9799/691a52da31f703d176d4f913c5de5fe4)** project by malte9799 on [Github](https://github.com/malte9799) and [reddit](https://www.reddit.com/user/Malte9799/), originally published as a GitHub Gist.
 
-**All credit for the original concept and the already very solid implementation goes to him!**
+**All credits goes to him!**
 
-Based on his JavaScript, a number of small improvements and adjustments have been made:
+Based on his JavaScript, a number of small improvements, adjustments & additions have been made:
 
 - ...
 - ...
 - ...
 
+---
+Original readme post by [malte9799](https://github.com/malte9799):
 # Jellyfin – Collection Preview
 
 Hover a collection (BoxSet) card in the Jellyfin web client and its poster images spread out above it like a hand of cards being opened. The preview tracks your mouse — the poster nearest the cursor rotates upright and comes to the front with its title, while its neighbours part around it. Click any poster to jump straight to that item.
