@@ -6,7 +6,7 @@ Based on his already very advanced Script, a number of small improvements, adjus
 
 - In the original script, the opening animation on hover wasn't always consistent — sometimes the tiles would just pop in instantly instead of animating. This has been fixed so the opening animation now always plays consistently.
 - An alternative hover mode has been added (enable via config). Instead of the subtiles fanning out whenever the mouse is anywhere over the main card (as in the original), they now only appear when the play button in the center of the main card is specifically focused/hovered. This makes the whole interaction calmer and more deliberate.
-- An alternative subtile play button has been added (enable via config). When enabled, the currently focused subtile always shows a play button. Clicking it starts the movie directly; clicking anywhere else on the subtile behaves as usual (navigates to the item's details page).
+- An alternative subtile play button has been added (enable via config). When enabled, the currently focused subtile always shows a play button. Clicking it starts the movie directly; clicking anywhere else on the subtile behaves as usual (navigates to the item's details page).<br>
 Note: To make this work, after a lot of experimenting and testing, I couldn't find any other solution than navigating directly to the movie detail page and triggering the Play button via script. A black fade transition is used to mask this process so it's barely noticeable, or ideally not noticeable at all.
 
 Support for TV shows is also planned, using season tiles with a completely separate config. Home Videos support may be added as well. None of this has been implemented in the script yet.
