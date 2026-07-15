@@ -11,16 +11,12 @@ Note: To make this work, after a lot of experimenting and testing, I couldn't fi
 
 Support for TV shows is also planned, using season tiles with a completely separate config. Home Videos support may be added as well. None of this has been implemented in the script yet.
 
----
-
 ## Tested on
 
 - Windows 11
 - Chrome
 - Jellyfin Web 10.10.7
 - Jellyfin JavaScript Injector
-
----
 
 ## License
 
