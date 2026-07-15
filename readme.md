@@ -9,6 +9,21 @@ Based on his already very advanced Script, a number of small improvements, adjus
 - ...
 
 ---
+
+## Tested on
+
+- Windows 11
+- Chrome
+- Jellyfin Web 10.10.7
+- Jellyfin JavaScript Injector
+
+---
+
+## License
+
+MIT
+
+---
 Original readme post by [malte9799](https://github.com/malte9799):
 # Jellyfin – Collection Preview
 
