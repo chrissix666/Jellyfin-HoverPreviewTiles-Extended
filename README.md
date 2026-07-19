@@ -150,6 +150,8 @@ Identical in structure and values to `CONFIG_MOVIES`.
 
 **`enablePreviewsOnSimilarSection`** (`true` / `false`) — disables the hover preview entirely within a "More Like This" section, for every card type.
 
+**`enablePreviewsOnNextUp`** (`true` / `false`) — disables the hover preview entirely within a "Next Up" section for TV Shows.
+
 ## Tested on
 
 - Windows 11
