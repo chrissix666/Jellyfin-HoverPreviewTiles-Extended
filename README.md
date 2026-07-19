@@ -114,13 +114,13 @@ All shared settings, height-anchored, with `centerHoverZoneRatio` active (folder
 
 **`mixedOrderMode`** — `"foldersFirst"` or `"videosFirst"` — arrangement when a folder contains both. Only relevant when `separateSortForFoldersAndVideos` is true.
 
-**`skipFolderLayerNamesEnabled`** (`true` / `false`) — master switch for automatically skipping single "wrapper folders"¹.
+¹**`skipFolderLayerNamesEnabled`** (`true` / `false`) — master switch for automatically skipping single "wrapper folders"¹.
 
-**`skipFolderLayerNames`** (comma-separated names, e.g. `"videos, clips, footage"`) — which folder names count as skippable "wrapper layers"¹.
+¹**`skipFolderLayerNames`** (comma-separated names, e.g. `"videos, clips, footage"`) — which folder names count as skippable "wrapper layers"¹.
 
-**`skipFolderLayerExactMatchEnabled`** (`true` / `false`) — allows skipping when the sole candidate folder's name matches exactly.
+¹**`skipFolderLayerExactMatchEnabled`** (`true` / `false`) — allows skipping when the sole candidate folder's name matches exactly.
 
-**`skipFolderLayerFuzzyFallbackEnabled`** (`true` / `false`) — allows skipping when the sole candidate folder's name only contains one of `skipFolderLayerNames`, rather than matching exactly.
+¹**`skipFolderLayerFuzzyFallbackEnabled`** (`true` / `false`) — allows skipping when the sole candidate folder's name only contains one of `skipFolderLayerNames`, rather than matching exactly.
 
 **`maxFolderSkipDepth`** (integer) — safety cap against endlessly/circularly nested folder structures.
 
