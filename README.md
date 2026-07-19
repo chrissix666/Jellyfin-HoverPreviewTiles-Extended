@@ -139,7 +139,7 @@ All shared settings, height-anchored, with `fallbackAspectRatio` fixed at `"16/9
 
 ### `CONFIG_EPISODES` — Episode cards, fans out an episode's own chapters
 
-Same structure as `CONFIG_MOVIES`, with `centerHoverZoneRatio` also active (fallback for a season's own episode list view, which has no real play button).
+Same structure as `CONFIG_MOVIES`.
 
 ### `CONFIG_HOMEVIDEOFILES` — individual Home Video file cards, fans out their own chapters
 
