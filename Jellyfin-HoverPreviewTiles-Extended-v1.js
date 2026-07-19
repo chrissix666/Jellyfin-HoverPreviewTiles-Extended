@@ -549,6 +549,12 @@
     // applies to every card type equally. Set to false to disable previews
     // there, while leaving them fully working everywhere else.
     enablePreviewsOnSimilarSection: true,
+    // Master on/off switch for the hover preview specifically within the
+    // "Next Up" section (confirmed container: .nextUpItems, found on the
+    // Home page — Next Up cards are Episodes, part of the TV Shows
+    // family) — applies to every card type equally. Set to false to
+    // disable previews there, while leaving them fully working elsewhere.
+    enablePreviewsOnNextUp: true,
   };
 
   // =========================================================================
@@ -584,9 +590,9 @@
   /**
    * Given a card element, returns its {key, cardSelector, config} entry, or
    * null if unrecognized OR excluded by GLOBAL_SETTINGS (Home page /
-   * "More Like This" section — see there for details). Checking hash
-   * with .includes() rather than an exact match covers both the older
-   * "#!/home.html" and current "#/home.html" URL styles.
+   * "More Like This" / "Next Up" sections — see there for details).
+   * Checking hash with .includes() rather than an exact match covers both
+   * the older "#!/home.html" and current "#/home.html" URL styles.
    */
   function resolveTypeConfig(card) {
     if (!card || !card.dataset) return null;
@@ -594,6 +600,7 @@
     if (!typeInfo || typeInfo.config.enabled === false) return null;
     if (!GLOBAL_SETTINGS.enablePreviewsOnHome && window.location.hash.includes("/home.html")) return null;
     if (!GLOBAL_SETTINGS.enablePreviewsOnSimilarSection && card.closest(".similarContent")) return null;
+    if (!GLOBAL_SETTINGS.enablePreviewsOnNextUp && card.closest(".nextUpItems")) return null;
     return typeInfo;
   }
 
