@@ -135,11 +135,11 @@ Example with `skipFolderLayerNames: "videos"`:<br>
 
 ### `CONFIG_MOVIES` — Movie cards, fans out a movie's own chapters
 
-All shared settings, height-anchored, with `fallbackAspectRatio` fixed at `"16/9"` (chapter images are always this shape, so `autoDetectAspectRatio` isn't used). No `sortBy`/`sortOrder` — chapters always come back chronologically. Plus:
+All shared settings, height-anchored, with `fallbackAspectRatio` fixed at `"16/9"` (chapter images are always this shape, so `autoDetectAspectRatio` isn't used). No `sortBy`/`sortOrder` — chapters always come back chronologically.
 
 ### `CONFIG_EPISODES` — Episode cards, fans out an episode's own chapters
 
-Same structure as `CONFIG_MOVIES`, with `centerHoverZoneRatio` also active (fallback for a season's own episode list view, which has no real play button). One difference:
+Same structure as `CONFIG_MOVIES`, with `centerHoverZoneRatio` also active (fallback for a season's own episode list view, which has no real play button).
 
 ### `CONFIG_HOMEVIDEOFILES` — individual Home Video file cards, fans out their own chapters
 
