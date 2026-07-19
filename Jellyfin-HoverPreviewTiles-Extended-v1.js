@@ -1,13 +1,23 @@
 /**
- * Jellyfin – Collection Preview
+ * Jellyfin – Hover Preview Tiles
  * ---------------------------------------------
- * Hover a BoxSet (collection) card and its poster images spread out,
- * rising half out of the card like a hand of cards being opened.
+ * Hover a BoxSet (collection) card, a Series (TV show) card, a Season card,
+ * or a Home Video folder card, and its contents spread out, rising half out
+ * of the card like a hand of cards being opened. For BoxSets the posters
+ * are the movies inside the collection; for Series they're the show's
+ * seasons; for Seasons they're the episodes; for Home Video folders they're
+ * that folder's direct children (a mix of sub-folders and videos).
  *
  * The preview tracks your mouse: the tile nearest the cursor rotates
  * upright, comes to the front with a white ring and its title, and
  * its neighbours part around it — all driven continuously by pointer
  * position for a fluid feel. Click a tile to jump to that item.
+ *
+ * Each card type has its OWN, fully independent config block (CONFIG_SETS /
+ * CONFIG_TVSHOWS / CONFIG_TVSEASONS / CONFIG_HOMEVIDEOS) — every option
+ * (hover mode, sizes, timings, direct-play behavior, etc.) can be tuned
+ * separately for each. See TYPE_CONFIGS near the top for how a hovered
+ * card is matched to the right config.
  *
  * This is a plain client-side script, not a compiled .NET plugin. Load it
  * with a JS-injection tool, e.g. the "JavaScript Injector" plugin
@@ -18,16 +28,20 @@
  */
 (function () {
   "use strict";
-
-  // Guard against double-init: injector tools can re-run this script on SPA navigation.
   if (window.__jfCollectionPreviewLoaded) return;
   window.__jfCollectionPreviewLoaded = true;
 
-  const CARD_SELECTOR = '.card[data-type="BoxSet"]';
-
-  const CONFIG = {
+  // =========================================================================
+  // CONFIG — Sets / Collections (BoxSet cards)
+  // =========================================================================
+  const CONFIG_SETS = {
+    // Master on/off switch for this entire card type. Set to false to
+    // disable the hover preview completely for BoxSet/Collection cards —
+    // hovering them then does nothing, as if this script didn't handle
+    // this card type at all.
+    enabled: true,
     hoverDelay: 220,        // ms to wait before opening (avoids flicker on quick passes)
-    maxPosters: 100,          // most posters to show at once
+    maxPosters: 100,        // most posters to show at once
     posterWidth: 110,       // px (height is derived from 2:3 aspect)
     maxSpreadDeg: 110,      // total arc width once "full"
     degPerPoster: 16,       // arc grows with poster count up to maxSpreadDeg
@@ -39,6 +53,8 @@
     staggerMs: 28,          // delay between each tile's animation
     closeMs: 220,
     scrollSettleMs: 160,    // ms of scroll silence before the preview may reappear
+    sortBy: "PremiereDate", // how the fetched child items are ordered
+    sortOrder: "Ascending",
 
     // --- Alternative Mode: Hover Play-Button Instead Of Whole Title Card ---
     // By default the preview opens on hovering ANYWHERE over the card tile.
@@ -53,6 +69,9 @@
     // all (e.g. a user without play permission), there's simply no zone to
     // trigger on and the preview won't open for that card in this mode.
     centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
 
     // --- Alternative Mode: Subtile Play Button On Focus ---
     // When true, the currently FOCUSED poster tile (the raised one with the
@@ -66,26 +85,538 @@
     // transition with an overlay so it feels instant. See
     // playItemDirect() for the full flow and its honest limitations.
     subtileFocusPlayButton: true,
-    subtilePlayButtonSizeRatio: 0.4, // button diameter, as a fraction of CONFIG.posterWidth
+    subtilePlayButtonSizeRatio: 0.4, // button diameter, as a fraction of posterWidth
+    directPlayButtonTimeoutMs: 4000, // how long to wait for the details page's real Play/Resume button to appear
+    directPlayRevealDelayMs: 500,    // how long to wait after clicking the real Play/Resume button before fading the black transition overlay away — tune this if the "silent" details page still flashes through (increase) or the reveal feels sluggish (decrease)
+
+    // --- Sets-Specific: Show Year In Tile Title ---
+    // When true, each movie tile's title shows "Name (Year)" instead of
+    // just "Name" — uses Jellyfin's own ProductionYear field. If a movie
+    // has no year data, falls back to plain "Name".
+    showYearInTitle: true,
+  };
+
+  // =========================================================================
+  // CONFIG — TV Shows (Series cards) — shows SEASON posters
+  // =========================================================================
+  // Fully independent copy of CONFIG_SETS — every option here can be tuned
+  // separately from the Sets/Collections config above.
+  const CONFIG_TVSHOWS = {
+    // Master on/off switch for this entire card type. Set to false to
+    // disable the hover preview completely for Series (TV show) cards —
+    // hovering them then does nothing, as if this script didn't handle
+    // this card type at all.
+    enabled: true,
+    hoverDelay: 220,        // ms to wait before opening (avoids flicker on quick passes)
+    maxPosters: 100,        // most posters to show at once
+    posterWidth: 110,       // px (height is derived from 2:3 aspect)
+    maxSpreadDeg: 110,      // total arc width once "full"
+    degPerPoster: 16,       // arc grows with poster count up to maxSpreadDeg
+    lift: 130,              // px the preview rises above its pivot
+    overlap: 0.5,           // fraction of the poster that stays INSIDE the card (0.5 = half in, half above)
+    hoverPushDeg: 11,       // how far neighbours get pushed away from the focused tile
+    hoverSpreadScale: 1.06, // whole preview opens slightly wider while the pointer is tracking
+    smoothing: 0.18,        // per-frame lerp factor for pointer tracking (higher = snappier)
+    staggerMs: 28,          // delay between each tile's animation
+    closeMs: 220,
+    scrollSettleMs: 160,    // ms of scroll silence before the preview may reappear
+    sortBy: "PremiereDate", // how the fetched child items are ordered
+    sortOrder: "Ascending",
+
+    // --- Alternative Mode: Hover Play-Button Instead Of Whole Title Card ---
+    // By default the preview opens on hovering ANYWHERE over the card tile.
+    // Set this to true to instead require the pointer to be over the small
+    // center zone — the same spot where Jellyfin's own hover play-button
+    // (".cardOverlayFab-primary") sits and enlarges/recolors via native CSS
+    // ":hover". Both opening AND closing follow the zone: the preview opens
+    // once the pointer settles inside it, and closes as soon as the pointer
+    // leaves it — even while still over the rest of the card. Moving onto
+    // one of the already-open floating poster tiles is exempt (otherwise
+    // you could never reach them to click). If a card has no play button at
+    // all (e.g. a user without play permission), there's simply no zone to
+    // trigger on and the preview won't open for that card in this mode.
+    centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
+
+    // --- Alternative Mode: Subtile Play Button On Focus ---
+    // When true, the currently FOCUSED poster tile (the raised one with the
+    // white ring/title) also grows its own miniature replica of Jellyfin's
+    // own play-button overlay, scaled down to the tile's size. Clicking it
+    // does NOT try to tap into Jellyfin's internal playbackManager directly
+    // (confirmed unreachable from an injected script) — instead it
+    // navigates to the item's real details page and then automatically
+    // clicks Jellyfin's own, genuinely-wired Play/Resume button there
+    // (".mainDetailButtons .btnPlay" / ".btnResume"), covering the brief
+    // transition with an overlay so it feels instant. See
+    // playItemDirect() for the full flow and its honest limitations.
+    subtileFocusPlayButton: true,
+    subtilePlayButtonSizeRatio: 0.4, // button diameter, as a fraction of posterWidth
+    directPlayButtonTimeoutMs: 4000, // how long to wait for the details page's real Play/Resume button to appear
+    directPlayRevealDelayMs: 500,    // how long to wait after clicking the real Play/Resume button before fading the black transition overlay away — tune this if the "silent" details page still flashes through (increase) or the reveal feels sluggish (decrease)
+
+    // --- TV-Show-Specific: Skip Preview On Single-Season Series ---
+    // If a series only has a single season, fanning out "one poster" isn't
+    // useful. Set this to true to make the preview not open at all for such
+    // a series — hovering it does nothing, same as a card type this script
+    // doesn't handle. Only checked for this config (Sets/Collections have
+    // no equivalent option, since a one-item collection is still meaningful
+    // to preview).
+    skipSingleSeason: true,
+    // --- TV-Show-Specific: Show Episodes Instead, On Single-Season Series ---
+    // Only relevant when skipSingleSeason (above) actually applies. Instead
+    // of doing nothing for a single-season series, fetch that one season's
+    // own children and fan out its EPISODES directly on the series card —
+    // using CONFIG_TVSEASONS' settings (sizing, aspect ratio detection,
+    // etc.) for the resulting tiles, exactly as if you'd hovered that
+    // season card itself. If false, a single-season series simply does
+    // nothing on hover, same as before.
+    singleSeasonShowEpisodesInstead: true,
+  };
+
+  // =========================================================================
+  // CONFIG — TV Show Seasons (Season cards) — shows EPISODE posters
+  // =========================================================================
+  // Fully independent copy of CONFIG_TVSHOWS — every option here can be
+  // tuned separately. This handles hovering a SEASON card (e.g. inside a
+  // series' season grid) to fan out that season's episodes, as opposed to
+  // CONFIG_TVSHOWS which handles hovering the SERIES card itself to fan out
+  // its seasons.
+  const CONFIG_TVSEASONS = {
+    // Master on/off switch for this entire card type. Set to false to
+    // disable the hover preview completely for Season cards — hovering
+    // them then does nothing, as if this script didn't handle this card
+    // type at all.
+    enabled: true,
+    hoverDelay: 220,        // ms to wait before opening (avoids flicker on quick passes)
+    maxPosters: 100,        // most posters to show at once
+    // Episode thumbnails are typically widescreen rather than poster-shaped
+    // — unlike Sets/TV Shows/Home Videos, sizing here is anchored on a
+    // fixed HEIGHT instead of a width (posterWidth doesn't exist in this
+    // config at all). Width is derived automatically from this height and
+    // whichever aspect ratio gets detected below, so every tile ends up
+    // exactly this tall (matching Sets/TV Shows tiles: 110px wide at 2:3 ≈
+    // 165px tall), however wide that makes it (e.g. ~293px at 16:9).
+    posterHeight: 165,
+    // Detects the fan's shared tile shape from the fetched episodes' own
+    // image data (already included in every fetch — no extra request).
+    // See resolveTileAspectRatio() for exactly how the detection works.
+    autoDetectAspectRatio: true,
+    aspectRatioCandidates: "2/3, 1/1, 4/3, 16/9", // candidate ratios (width/height) to snap detected shapes to
+    fallbackAspectRatio: "2/3", // used when autoDetectAspectRatio is off, or no image data is available
+    maxSpreadDeg: 110,       // total arc width once "full"
+    degPerPoster: 16,       // arc grows with poster count up to maxSpreadDeg
+    lift: 130,              // px the preview rises above its pivot
+    overlap: 0.5,           // fraction of the poster that stays INSIDE the card (0.5 = half in, half above)
+    hoverPushDeg: 11,       // how far neighbours get pushed away from the focused tile
+    hoverSpreadScale: 1.06, // whole preview opens slightly wider while the pointer is tracking
+    smoothing: 0.18,        // per-frame lerp factor for pointer tracking (higher = snappier)
+    staggerMs: 28,          // delay between each tile's animation
+    closeMs: 220,
+    scrollSettleMs: 160,    // ms of scroll silence before the preview may reappear
+    sortBy: "PremiereDate", // how the fetched child items are ordered
+    sortOrder: "Ascending",
+
+    // --- Alternative Mode: Hover Play-Button Instead Of Whole Title Card ---
+    // By default the preview opens on hovering ANYWHERE over the card tile.
+    // Set this to true to instead require the pointer to be over the small
+    // center zone — the same spot where Jellyfin's own hover play-button
+    // (".cardOverlayFab-primary") sits and enlarges/recolors via native CSS
+    // ":hover". Both opening AND closing follow the zone: the preview opens
+    // once the pointer settles inside it, and closes as soon as the pointer
+    // leaves it — even while still over the rest of the card. Moving onto
+    // one of the already-open floating poster tiles is exempt (otherwise
+    // you could never reach them to click). If a card has no play button at
+    // all (e.g. a user without play permission), there's simply no zone to
+    // trigger on and the preview won't open for that card in this mode.
+    centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
+
+    // --- Alternative Mode: Subtile Play Button On Focus ---
+    // When true, the currently FOCUSED poster tile (the raised one with the
+    // white ring/title) also grows its own miniature replica of Jellyfin's
+    // own play-button overlay, scaled down to the tile's size. Clicking it
+    // does NOT try to tap into Jellyfin's internal playbackManager directly
+    // (confirmed unreachable from an injected script) — instead it
+    // navigates to the item's real details page and then automatically
+    // clicks Jellyfin's own, genuinely-wired Play/Resume button there
+    // (".mainDetailButtons .btnPlay" / ".btnResume"), covering the brief
+    // transition with an overlay so it feels instant. See
+    // playItemDirect() for the full flow and its honest limitations.
+    subtileFocusPlayButton: true,
+    subtilePlayButtonSizeRatio: 0.4, // button diameter, as a fraction of the reference width (see getButtonSizeReferenceWidth())
+    directPlayButtonTimeoutMs: 4000, // how long to wait for the details page's real Play/Resume button to appear
+    directPlayRevealDelayMs: 500,    // how long to wait after clicking the real Play/Resume button before fading the black transition overlay away — tune this if the "silent" details page still flashes through (increase) or the reveal feels sluggish (decrease)
+
+    // --- TV-Season-Specific: Show Season/Episode Number In Tile Title ---
+    // When true, each episode tile's title is prefixed with "SX:EY - "
+    // (season/episode number, from Jellyfin's ParentIndexNumber/
+    // IndexNumber fields) instead of just "Name". If season/episode
+    // numbers are missing, falls back to plain "Name".
+    showSeasonEpisodeNumberInTitle: true,
+  };
+
+  // =========================================================================
+  // CONFIG — Home Videos (Folder cards) — shows the folder's direct children
+  // =========================================================================
+  // Fully independent copy of CONFIG_SETS — every option here can be tuned
+  // separately from the other two configs above. Home Video folders can be
+  // nested arbitrarily deep, and their direct children can themselves be a
+  // MIX of sub-folders and actual playable videos (unlike Sets/TV Shows,
+  // where children are always uniformly playable). See buildPreview()'s
+  // per-item canPlay check for how that mix is handled.
+  const CONFIG_HOMEVIDEOS = {
+    // Master on/off switch for this entire card type. Set to false to
+    // disable the hover preview completely for Home Video folder cards —
+    // hovering them then does nothing, as if this script didn't handle
+    // this card type at all.
+    enabled: true,
+    hoverDelay: 220,        // ms to wait before opening (avoids flicker on quick passes)
+    maxPosters: 33,         // most posters to show at once
+    // Home Video content varies a lot more in shape than movies/episodes —
+    // landscape recordings, square social-media clips, and portrait phone
+    // videos can all show up in the same folder — so sizing here, like TV
+    // Seasons, is anchored on a fixed HEIGHT instead of a width
+    // (posterWidth doesn't exist in this config at all). Width is derived
+    // automatically from this height and whichever aspect ratio gets
+    // detected below, so every tile ends up exactly this tall (matching
+    // Sets/TV Shows tiles: 110px wide at 2:3 ≈ 165px tall), however wide
+    // (or narrow, for portrait clips) that makes it.
+    posterHeight: 165,
+    // Detects the fan's shared tile shape from the fetched items' own image
+    // data (already included in every fetch — no extra request). See
+    // resolveTileAspectRatio() for exactly how the detection works.
+    autoDetectAspectRatio: true,
+    // Includes 9/16 (portrait) in addition to the usual landscape/square
+    // shapes, unlike CONFIG_TVSEASONS's list, since Home Videos commonly
+    // include portrait phone recordings.
+    aspectRatioCandidates: "2/3, 1/1, 4/3, 16/9, 9/16",
+    fallbackAspectRatio: "2/3", // used when autoDetectAspectRatio is off, or no image data is available
+    maxSpreadDeg: 110,       // total arc width once "full"
+    degPerPoster: 16,       // arc grows with poster count up to maxSpreadDeg
+    lift: 130,              // px the preview rises above its pivot
+    overlap: 0.5,           // fraction of the poster that stays INSIDE the card (0.5 = half in, half above)
+    hoverPushDeg: 11,       // how far neighbours get pushed away from the focused tile
+    hoverSpreadScale: 1.06, // whole preview opens slightly wider while the pointer is tracking
+    smoothing: 0.18,        // per-frame lerp factor for pointer tracking (higher = snappier)
+    staggerMs: 28,          // delay between each tile's animation
+    closeMs: 220,
+    scrollSettleMs: 160,    // ms of scroll silence before the preview may reappear
+
+    // --- Home-Video-Specific: Sort Order For Fetched Child Items ---
+    // sortBy options: Album, AlbumArtist, Artist, Budget, CommunityRating,
+    //   CriticRating, DateCreated, DatePlayed, PlayCount, PremiereDate,
+    //   ProductionYear, SortName, Random, Revenue, Runtime
+    // sortOrder options: Ascending, Descending
+
+    // Master switch: false = one shared sort for everything (below);
+    // true = folders and videos get their own separate sort instead.
+    separateSortForFoldersAndVideos: false,
+
+    // Used when separateSortForFoldersAndVideos is FALSE — folders and
+    // videos sorted together, as one combined list. Home Video files/
+    // folders rarely have meaningful release-date metadata (they're
+    // personal recordings, not movies/shows), so PremiereDate (the default
+    // used by Sets/TV Shows) isn't a good fit here.
+    sortBy: "Random",
+    sortOrder: "Ascending",
+
+    // Used when separateSortForFoldersAndVideos is TRUE instead — each
+    // group gets its own rule (same sortBy/sortOrder options as above):
+    folderSortBy: "SortName",
+    folderSortOrder: "Ascending",
+    videoSortBy: "Random",
+    videoSortOrder: "Ascending",
+    // How folders and videos are arranged in the fan when a folder mixes
+    // both (only relevant when separateSortForFoldersAndVideos is true):
+    //   "foldersFirst" — all folder tiles, then all video tiles
+    //   "videosFirst"  — all video tiles, then all folder tiles
+    mixedOrderMode: "foldersFirst",
+
+    // --- Home-Video-Specific: Skip Wrapper Folder Layer(s) ---
+    // Some Home Video folder structures have an extra, meaningless wrapper
+    // layer in between, e.g.:
+    //   FolderName (folder)
+    //     └── videos (folder)       <- pointless middle layer, gets skipped
+    //           └── Video1, Video2, ...   <- what actually gets shown
+    // Applied consistently in TWO places: when you HOVER a card (decides
+    // what's shown in the fan) and when you CLICK a folder subtile or the
+    // "+N more" tile (decides where it navigates to).
+    //
+    // How a skip decision is made: among a folder's children, count how
+    // many CONTAIN one of the names below (unrelated folders like "fotos"
+    // don't count at all). Only if that count is exactly ONE does anything
+    // get skipped — see the two toggles below for exact vs. partial matches.
+    skipFolderLayerNamesEnabled: true, // master on/off switch for this whole feature
+    // Comma-separated, case-insensitive folder names to match against.
+    // Example: "videos, clips, footage"
+    skipFolderLayerNames: "videos",
+    // Allows skipping when the single candidate is an EXACT name match
+    // (e.g. a child literally named "videos").
+    skipFolderLayerExactMatchEnabled: true,
+    // Fallback: allows skipping when the single candidate only CONTAINS one
+    // of skipFolderLayerNames rather than matching it exactly (e.g. "videos
+    // Instagram"). Only ever consulted when there's no exact match and
+    // still just one candidate overall — never when multiple similarly-
+    // named folders exist.
+    skipFolderLayerFuzzyFallbackEnabled: true,
+    maxFolderSkipDepth: 1, // safety cap against runaway/circular folder structures
+
+    // --- Alternative Mode: Hover Center Zone Instead Of Whole Title Card ---
+    // By default the preview opens on hovering ANYWHERE over the card tile.
+    // Set this to true to instead require the pointer to be over a small
+    // center zone. Unlike Sets/TV Shows, a Home Video FOLDER card never has
+    // a real play button to hook into (folders aren't playable) — so this
+    // zone is a purely geometric, invisible circle in the middle of the
+    // card instead of a real button's :hover state (see
+    // centerHoverZoneRatio below). Both opening AND closing follow the
+    // zone: the preview opens once the pointer settles inside it, and
+    // closes as soon as the pointer leaves it — even while still over the
+    // rest of the card. Moving onto one of the already-open floating
+    // poster tiles is exempt (otherwise you could never reach them to
+    // click).
+    centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
+    // Radius of the invisible center-hover circle, as a fraction of the
+    // card's shorter side. Only relevant when centerHoverOnly is true.
+    centerHoverZoneRatio: 0.22,
+
+    // --- Alternative Mode: Subtile Play Button On Focus ---
+    // When true, the currently FOCUSED poster tile (the raised one with the
+    // white ring/title) also grows its own miniature replica of Jellyfin's
+    // own play-button overlay, scaled down to the tile's size. Clicking it
+    // does NOT try to tap into Jellyfin's internal playbackManager directly
+    // (confirmed unreachable from an injected script) — instead it
+    // navigates to the item's real details page and then automatically
+    // clicks Jellyfin's own, genuinely-wired Play/Resume button there
+    // (".mainDetailButtons .btnPlay" / ".btnResume"), covering the brief
+    // transition with an overlay so it feels instant. Only actually shows
+    // up on VIDEO subtiles — sub-folder subtiles never get one (see
+    // buildPreview()'s canPlay check), since a folder can't be played.
+    // See playItemDirect() for the full flow and its honest limitations.
+    subtileFocusPlayButton: true,
+    subtilePlayButtonSizeRatio: 0.4, // button diameter, as a fraction of the reference width (see getButtonSizeReferenceWidth())
     directPlayButtonTimeoutMs: 4000, // how long to wait for the details page's real Play/Resume button to appear
     directPlayRevealDelayMs: 500,    // how long to wait after clicking the real Play/Resume button before fading the black transition overlay away — tune this if the "silent" details page still flashes through (increase) or the reveal feels sluggish (decrease)
   };
 
-  const POSTER_HEIGHT = CONFIG.posterWidth * 1.5; // 2:3 aspect
+  // =========================================================================
+  // CONFIG — Movies (Movie cards) — shows CHAPTER previews
+  // CONFIG — Episodes (Episode cards) — shows CHAPTER previews
+  // CONFIG — Home Video Files (Video cards) — shows CHAPTER previews
+  // =========================================================================
+  // These three are structurally different from the four configs above:
+  // instead of fanning out a container's CHILDREN (fetched via ParentId),
+  // they fan out a single video's own CHAPTER images (fetched via that
+  // item's own Chapters field) — see fetchItemChapters() and
+  // TYPE_CONFIGS' fetchMode: "chapters" below. Clicking a chapter tile (or
+  // its play button) plays that exact video, seeked directly to that
+  // chapter's timestamp — see playItemDirectAtChapter().
+  //
+  // Chapter images are always extracted at a fixed 16:9 resolution by
+  // Jellyfin itself, so unlike TV Seasons/Home Videos there's no per-item
+  // aspect ratio data to detect from — these configs just use a fixed
+  // fallbackAspectRatio instead of autoDetectAspectRatio. There's also no
+  // sortBy/sortOrder here: chapters already come back in chronological
+  // order from the API, and re-sorting them wouldn't make sense.
+  const CONFIG_MOVIES = {
+    enabled: true,
+    hoverDelay: 220,
+    maxPosters: 100,
+    posterHeight: 165,          // px — every chapter tile's fixed height; width follows from fallbackAspectRatio below
+    fallbackAspectRatio: "16/9", // chapter images are always extracted at this ratio by Jellyfin itself
+    maxSpreadDeg: 110,
+    degPerPoster: 16,
+    lift: 130,
+    overlap: 0.5,
+    hoverPushDeg: 11,
+    hoverSpreadScale: 1.06,
+    smoothing: 0.18,
+    staggerMs: 28,
+    closeMs: 220,
+    scrollSettleMs: 160,
+
+    // Same as the other configs' centerHoverOnly — Movies are playable, so
+    // this uses the card's real play button, not a geometric fallback.
+    centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
+
+    // Same idea as the other configs' subtileFocusPlayButton, but clicking
+    // it (or the tile itself) plays THIS movie seeked directly to that
+    // chapter's timestamp, via playItemDirectAtChapter().
+    subtileFocusPlayButton: true,
+    subtilePlayButtonSizeRatio: 0.4,
+    directPlayButtonTimeoutMs: 4000,
+    directPlayRevealDelayMs: 500,
+    // Resets the resume position before a chapter seek (see
+    // resetPlaybackPosition()). Works cleanly for Movies. Left true here;
+    // set to false in CONFIG_EPISODES, where it was found to sometimes
+    // trigger Jellyfin's own episode-to-episode "played" logic instead.
+    resetPositionBeforeChapterPlay: true,
+  };
+
+  const CONFIG_EPISODES = {
+    enabled: true,
+    hoverDelay: 220,
+    maxPosters: 100,
+    posterHeight: 165,
+    fallbackAspectRatio: "16/9",
+    maxSpreadDeg: 110,
+    degPerPoster: 16,
+    lift: 130,
+    overlap: 0.5,
+    hoverPushDeg: 11,
+    hoverSpreadScale: 1.06,
+    smoothing: 0.18,
+    staggerMs: 28,
+    closeMs: 220,
+    scrollSettleMs: 160,
+    centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
+    // Fallback for contexts where no real ".cardOverlayFab-primary" play
+    // button exists to hover — confirmed via source: episodes inside a
+    // season's own episode LIST (as opposed to grid/card contexts like
+    // suggestions or "More from this season") render through Jellyfin's
+    // listview.js component instead of cardBuilder.js, which uses a
+    // completely different button system (no cardOverlayFab-primary at
+    // all). Without this, centerHoverOnly could never trigger there.
+    centerHoverZoneRatio: 0.22,
+    subtileFocusPlayButton: true,
+    subtilePlayButtonSizeRatio: 0.4,
+    directPlayButtonTimeoutMs: 4000,
+    directPlayRevealDelayMs: 500,
+    // Confirmed via live testing: resetting the resume position before a
+    // chapter seek on an EPISODE can trigger Jellyfin's own episode-to-
+    // episode "played" logic, incorrectly marking it watched regardless of
+    // actual progress. Movies don't have this system at all, so the reset
+    // stays safe/on for them (see CONFIG_MOVIES). Skipping the reset here
+    // means the original "sometimes lands on the resume point instead of
+    // the chosen chapter" risk can reappear for episodes with an existing
+    // resume position — an accepted trade-off for now.
+    resetPositionBeforeChapterPlay: false,
+  };
+
+  const CONFIG_HOMEVIDEOFILES = {
+    enabled: true,
+    hoverDelay: 220,
+    maxPosters: 100,
+    posterHeight: 165,
+    fallbackAspectRatio: "16/9",
+    maxSpreadDeg: 110,
+    degPerPoster: 16,
+    lift: 130,
+    overlap: 0.5,
+    hoverPushDeg: 11,
+    hoverSpreadScale: 1.06,
+    smoothing: 0.18,
+    staggerMs: 28,
+    closeMs: 220,
+    scrollSettleMs: 160,
+    centerHoverOnly: true,
+    // Separate delay ONLY for this centerHoverOnly trigger path — REPLACES
+    // hoverDelay entirely for this path (not added on top of it).
+    centerHoverOnlyDelay: 1500,
+    subtileFocusPlayButton: true,
+    subtilePlayButtonSizeRatio: 0.4,
+    directPlayButtonTimeoutMs: 4000,
+    directPlayRevealDelayMs: 500,
+    // Same as CONFIG_MOVIES — Home Video files aren't part of Jellyfin's
+    // episode-to-episode "played" system, so the reset stays safe/on.
+    resetPositionBeforeChapterPlay: true,
+  };
+
+  // =========================================================================
+  // Global settings — apply across ALL card types (not per-config), unlike
+  // everything above.
+  // =========================================================================
+  const GLOBAL_SETTINGS = {
+    // Master on/off switch for the hover preview specifically on the Home
+    // page (#/home.html) — applies to every card type equally, regardless
+    // of media type. Set to false to disable previews there entirely,
+    // while leaving them fully working everywhere else.
+    enablePreviewsOnHome: true,
+    // Master on/off switch for the hover preview specifically within a
+    // "More Like This" section (confirmed container: .similarContent) —
+    // applies to every card type equally. Set to false to disable previews
+    // there, while leaving them fully working everywhere else.
+    enablePreviewsOnSimilarSection: true,
+  };
+
+  // =========================================================================
+  // Card-type registry — maps a card's data-type to its selector + config.
+  // Add more entries here the same way for any further type. fetchMode
+  // defaults to fetching a container's CHILDREN via ParentId (the original
+  // behavior) when omitted; "chapters" instead fetches a single video
+  // item's own chapter list (see showPreview() / fetchItemChapters()).
+  // =========================================================================
+  const TYPE_CONFIGS = {
+    BoxSet: { key: "sets", cardSelector: '.card[data-type="BoxSet"]', config: CONFIG_SETS },
+    Series: { key: "tvshows", cardSelector: '.card[data-type="Series"]', config: CONFIG_TVSHOWS },
+    Season: { key: "tvseasons", cardSelector: '.card[data-type="Season"]', config: CONFIG_TVSEASONS },
+    Folder: { key: "homevideos", cardSelector: '.card[data-type="Folder"]', config: CONFIG_HOMEVIDEOS },
+    // NOTE: the actual data-type Jellyfin uses for a single Home Video FILE
+    // card is assumed to be "Video" here (by analogy with the confirmed
+    // BaseItemKind naming for BoxSet/Series/Season/Folder) but wasn't
+    // separately confirmed the way "Folder" was (via a real checked URL).
+    // If chapter previews don't trigger on your home video file cards,
+    // this is the first thing to check/correct.
+    Movie: { key: "movies", cardSelector: '.card[data-type="Movie"]', config: CONFIG_MOVIES, fetchMode: "chapters" },
+    // Matches BOTH the normal grid card markup (cardBuilder.js) AND the
+    // season-page's own episode LIST view markup (listview.js) — confirmed
+    // via real DOM inspection that the latter uses ".listItem" (no "card"
+    // class at all) instead of ".card" for its outer element.
+    Episode: { key: "episodes", cardSelector: '.card[data-type="Episode"], .listItem[data-type="Episode"]', config: CONFIG_EPISODES, fetchMode: "chapters" },
+    Video: { key: "homevideofiles", cardSelector: '.card[data-type="Video"]', config: CONFIG_HOMEVIDEOFILES, fetchMode: "chapters" },
+  };
+  const CARD_SELECTOR = Object.keys(TYPE_CONFIGS)
+    .map((k) => TYPE_CONFIGS[k].cardSelector)
+    .join(", ");
+
+  /**
+   * Given a card element, returns its {key, cardSelector, config} entry, or
+   * null if unrecognized OR excluded by GLOBAL_SETTINGS (Home page /
+   * "More Like This" section — see there for details). Checking hash
+   * with .includes() rather than an exact match covers both the older
+   * "#!/home.html" and current "#/home.html" URL styles.
+   */
+  function resolveTypeConfig(card) {
+    if (!card || !card.dataset) return null;
+    const typeInfo = TYPE_CONFIGS[card.dataset.type];
+    if (!typeInfo || typeInfo.config.enabled === false) return null;
+    if (!GLOBAL_SETTINGS.enablePreviewsOnHome && window.location.hash.includes("/home.html")) return null;
+    if (!GLOBAL_SETTINGS.enablePreviewsOnSimilarSection && card.closest(".similarContent")) return null;
+    return typeInfo;
+  }
+
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // Real problems only — no verbose tracing.
-  const warn = (...args) => console.warn("[collection-preview]", ...args);
-  const err = (...args) => console.error("[collection-preview]", ...args);
+  const warn = (...args) => console.warn("[hover-preview-tiles]", ...args);
+  const err = (...args) => console.error("[hover-preview-tiles]", ...args);
 
   // ---- styles -------------------------------------------------------
+  // Size-dependent values (poster width, play-button size) are NOT baked in
+  // here as fixed numbers anymore — they're read from CSS custom properties
+  // (--jf-poster-width / --jf-playbtn-size) that buildPreview() sets on the
+  // container per-instance, based on whichever config applies to the card
+  // that was hovered. The var() fallbacks below only matter if that ever
+  // fails to be set for some reason.
   const style = document.createElement("style");
   style.textContent = `
     .jf-preview-container{position:fixed;top:0;left:0;width:0;height:0;z-index:9999;pointer-events:none;}
     .jf-preview-arm{position:absolute;top:0;left:0;width:0;height:0;
       transform:rotate(0deg) translateY(0px);
       transition:transform ${reduceMotion ? "0s" : ".45s cubic-bezier(.22,.85,.25,1.15)"};}
-    .jf-preview-tile{position:absolute;top:0;left:0;width:${CONFIG.posterWidth}px;aspect-ratio:2/3;
+    .jf-preview-tile{position:absolute;top:0;left:0;width:var(--jf-poster-width, 110px);aspect-ratio:var(--jf-tile-aspect-ratio, 2/3);
       border-radius:6px;background:#222;overflow:hidden;
       box-shadow:0 8px 20px rgba(0,0,0,.55);
       transform:translate(-50%,-50%) scale(.6);opacity:0;
@@ -111,10 +642,9 @@
     .jf-preview-more{display:flex;align-items:center;justify-content:center;color:#fff;
       font-weight:700;font-size:.85em;background:rgba(0,0,0,.6);}
     .jf-preview-playbtn{display:none;position:absolute;top:50%;left:50%;opacity:1;
-      width:${CONFIG.posterWidth * CONFIG.subtilePlayButtonSizeRatio}px;
-      height:${CONFIG.posterWidth * CONFIG.subtilePlayButtonSizeRatio}px;
-      margin-top:-${(CONFIG.posterWidth * CONFIG.subtilePlayButtonSizeRatio) / 2}px;
-      margin-left:-${(CONFIG.posterWidth * CONFIG.subtilePlayButtonSizeRatio) / 2}px;
+      width:var(--jf-playbtn-size, 44px);height:var(--jf-playbtn-size, 44px);
+      margin-top:calc(var(--jf-playbtn-size, 44px) * -0.5);
+      margin-left:calc(var(--jf-playbtn-size, 44px) * -0.5);
       border-radius:50%;background-color:rgba(0,0,0,.7);color:#fff;
       align-items:center;justify-content:center;cursor:pointer;pointer-events:auto;
       border:none;padding:0;transition:transform .2s, background-color .2s, color .2s;}
@@ -129,9 +659,9 @@
   document.head.appendChild(style);
 
   // ---- state ----------------------------------------------------------
-  const itemCache = new Map();        // collectionId -> {Items, TotalRecordCount}
+  const itemCache = new Map();        // parentId -> {Items, TotalRecordCount} (shared; ids never collide across types)
   const hoverTimers = new WeakMap();  // card -> pending "open" timeout
-  let active = null;                  // currently open preview's state (shape defined in buildPreview)
+  let active = null;                  // currently open preview's state (shape defined in buildPreview); active.config is the type config that opened it
   const lastMouse = { x: -1, y: -1 }; // last known pointer position (used after scroll/fetch settle)
   let isScrolling = false;
   let scrollEndTimer = null;
@@ -168,6 +698,71 @@
     }
     const prefix = window.location.hash.startsWith("#!") ? "#!/details?" : "#/details?";
     window.location.href = prefix + query;
+  }
+
+  /**
+   * Navigate INTO a folder (browse its contents) — a different route than
+   * goToItem()'s item-details page. Confirmed via the actual URL Jellyfin
+   * itself uses when browsing into a Home Video folder:
+   * "#/list.html?parentId=X&serverId=Y", not "#/details?id=X". Used for
+   * Home Video sub-folder subtiles and their "+N more" tile — Sets/TV Shows
+   * never call this, since their "+N more" target (a BoxSet/Series) is a
+   * proper details-page item, not a plain folder.
+   */
+  function goToFolder(folderId) {
+    const api = getApiClient();
+    const serverId = api && typeof api.serverId === "function" ? api.serverId() : null;
+    const query = `parentId=${folderId}${serverId ? `&serverId=${serverId}` : ""}`;
+    try {
+      if (window.Emby && window.Emby.Page && typeof window.Emby.Page.show === "function") {
+        window.Emby.Page.show(`/list.html?${query}`);
+        return;
+      }
+    } catch (e) {
+      warn("Emby.Page.show failed, falling back to hash navigation", e);
+    }
+    const prefix = window.location.hash.startsWith("#!") ? "#!/list.html?" : "#/list.html?";
+    window.location.href = prefix + query;
+  }
+
+  /**
+   * Movies/Episodes/Home Video files: resets an item's saved resume
+   * position to 0 via Jellyfin's own documented UserData endpoint
+   * (POST /Users/{userId}/Items/{itemId}/UserData with
+   * {PlaybackPositionTicks: 0}) — same effect as watching the item to
+   * completion or manually clearing "Continue Watching" for it. Used right
+   * before a chapter-seek play: with no resume position left, Jellyfin's
+   * details page only renders the real "Play" button (never "Resume"),
+   * which was the actual source of the "sometimes jumps to the resume
+   * point instead of the chosen chapter" bug — Resume triggers Jellyfin's
+   * OWN jump to ITS saved position, racing our own seek. We deliberately
+   * do NOT restore the old resume value afterwards: the resulting real
+   * playback session reports its own progress as it goes, which naturally
+   * re-establishes a (more relevant, up to date) resume point on its own.
+   */
+  function resetPlaybackPosition(itemId) {
+    const api = getApiClient();
+    if (!api || typeof api.ajax !== "function") {
+      warn("resetPlaybackPosition: ApiClient.ajax not available, skipping reset");
+      return Promise.resolve();
+    }
+    const userId = typeof api.getCurrentUserId === "function" ? api.getCurrentUserId() : null;
+    if (!userId) return Promise.resolve();
+    try {
+      return Promise.resolve(
+        api.ajax({
+          type: "POST",
+          url: api.getUrl(`Users/${userId}/Items/${itemId}/UserData`),
+          data: JSON.stringify({ PlaybackPositionTicks: 0 }),
+          contentType: "application/json",
+        })
+      ).catch((e) => {
+        warn("resetPlaybackPosition failed for", itemId, e);
+      });
+    } catch (e) {
+      warn("resetPlaybackPosition: api.ajax threw synchronously", e);
+      return Promise.resolve();
+    }
   }
 
   // ---- direct play (subtileFocusPlayButton) -----------------------------
@@ -226,7 +821,7 @@
     }, 260);
   }
 
-  function playItemDirect(itemId) {
+  function playItemDirect(itemId, config, seekSeconds) {
     showTransitionOverlay();
     // Double rAF: a style change is only guaranteed to have been PAINTED by
     // the time two animation frames have passed. Without this, navigation
@@ -236,13 +831,64 @@
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         goToItem(itemId);
-        runDirectPlayClickSequence(itemId);
+        runDirectPlayClickSequence(itemId, config, seekSeconds);
       });
     });
   }
 
-  function runDirectPlayClickSequence(itemId) {
-    const clickDeadline = performance.now() + CONFIG.directPlayButtonTimeoutMs;
+  /**
+   * Movies/Episodes/Home Video files: same flow as playItemDirect(), but
+   * additionally seeks the resulting <video> element to a specific
+   * chapter's timestamp once playback has actually started. startTicks is
+   * Jellyfin's own tick unit (100-nanosecond intervals) — divided by
+   * 10,000,000 to get seconds, which is what HTMLMediaElement.currentTime
+   * expects.
+   */
+  function playItemDirectAtChapter(itemId, startTicks, config) {
+    const seekSeconds = (startTicks || 0) / 10000000;
+    showTransitionOverlay();
+    // Double rAF first (same reasoning as playItemDirect() — makes sure the
+    // overlay has actually been painted before anything else happens), THEN
+    // (if enabled for this config) reset the resume position, THEN
+    // navigate. Doing the reset before the overlay is visible would
+    // reintroduce the exact flash-of-content issue we already solved for
+    // the non-chapter case, since resetPlaybackPosition() is itself a
+    // network round-trip.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // The overlay is a MODAL dialog — it blocks the entire page until we
+        // hide it ourselves. If resetPlaybackPosition() ever throws
+        // synchronously, hangs, or doesn't behave like a real Promise (can
+        // vary across ApiClient versions), a bare .then() chain could just
+        // never fire, permanently freezing the whole page behind the modal.
+        // This "settle once, however we get there" guard plus a hard
+        // timeout makes sure we always proceed one way or another.
+        let settled = false;
+        const proceed = () => {
+          if (settled) return;
+          settled = true;
+          goToItem(itemId);
+          runDirectPlayClickSequence(itemId, config, seekSeconds);
+        };
+        if (!config.resetPositionBeforeChapterPlay) {
+          proceed();
+          return;
+        }
+        setTimeout(proceed, 800); // hard ceiling — proceed no matter what if the reset is slow/stuck
+        try {
+          Promise.resolve(resetPlaybackPosition(itemId))
+            .catch((e) => warn("resetPlaybackPosition rejected", e))
+            .then(proceed);
+        } catch (e) {
+          warn("resetPlaybackPosition threw synchronously", e);
+          proceed();
+        }
+      });
+    });
+  }
+
+  function runDirectPlayClickSequence(itemId, config, seekSeconds) {
+    const clickDeadline = performance.now() + config.directPlayButtonTimeoutMs;
     const tryClick = () => {
       // goToItem() only kicks off navigation asynchronously and returns
       // immediately — right after that, the PREVIOUS details page (whatever
@@ -250,8 +896,26 @@
       // complete with its own valid, non-hidden Play/Resume button. Without
       // this guard we could find and click THAT stale button before
       // Jellyfin has swapped in the page for the item we actually want.
-      // Only proceed once the URL itself reflects navigation to this item.
-      if (!window.location.hash.includes(itemId)) {
+      // Two checks, both required: the URL itself must reflect navigation
+      // to this item, AND — confirmed via live testing to matter
+      // separately — a sibling button within .mainDetailButtons (e.g.
+      // btnPlaystate/btnUserRating, which carry a real data-id attribute;
+      // .btnPlay itself does not) must show the SAME id. The URL can
+      // update before the actual .mainDetailButtons block has been
+      // swapped in for the new item, especially when navigating from one
+      // details page directly to another (confirmed to reproduce the bug)
+      // — during that gap the OLD item's fully-wired button is still
+      // sitting there, and would otherwise get clicked instead. Searches
+      // directly for OUR target id (not "grab whichever data-id comes
+      // first, then compare") and scopes the button search to THAT
+      // specific container — if multiple .mainDetailButtons blocks exist
+      // in the DOM simultaneously (old one not yet removed, new one
+      // already present), a "grab first, compare" approach can keep
+      // matching the same wrong block forever and never succeed at all.
+      const hashReady = window.location.hash.includes(itemId);
+      const idButton = document.querySelector(`.mainDetailButtons [data-id="${itemId}"]`);
+      const container = idButton ? idButton.closest(".mainDetailButtons") : null;
+      if (!hashReady || !container) {
         if (performance.now() < clickDeadline) {
           setTimeout(tryClick, 50);
         } else {
@@ -260,15 +924,35 @@
         }
         return;
       }
+      // For a chapter seek, prefer the plain "Play" button over "Resume" —
+      // clicking Resume makes Jellyfin jump to its OWN saved resume
+      // position, which can then race our own seek (sometimes winning,
+      // sometimes losing, depending on timing) instead of landing on the
+      // chapter we actually asked for. Normal (non-chapter) direct play
+      // keeps preferring Resume, since resuming where you left off is the
+      // whole point there.
       const btn =
-        document.querySelector(".mainDetailButtons .btnResume:not(.hide)") ||
-        document.querySelector(".mainDetailButtons .btnPlay:not(.hide)");
+        seekSeconds != null
+          ? container.querySelector(".btnPlay:not(.hide)") ||
+            container.querySelector(".btnResume:not(.hide)")
+          : container.querySelector(".btnResume:not(.hide)") ||
+            container.querySelector(".btnPlay:not(.hide)");
       if (btn) {
         btn.click();
-        // Fixed buffer: reveal 200ms after the click, giving Jellyfin's own
-        // visible reaction (loading state, player container, etc.) time to
-        // begin before we start fading the overlay away.
-        setTimeout(hideTransitionOverlay, CONFIG.directPlayRevealDelayMs);
+        if (seekSeconds != null) {
+          // Chapter seeks: reveal the overlay once playback actually
+          // starts (or the timeout is hit as a fallback), rather than a
+          // fixed delay — confirmed via testing that episode detail pages
+          // can take noticeably longer to finish rendering (extra series/
+          // season breadcrumb data) than movie pages, which a fixed delay
+          // tuned for movies doesn't account for.
+          seekVideoWhenReady(seekSeconds, config.directPlayButtonTimeoutMs, hideTransitionOverlay);
+        } else {
+          // Non-chapter direct play: unchanged, fixed buffer giving
+          // Jellyfin's own visible reaction (loading state, player
+          // container, etc.) time to begin before fading the overlay away.
+          setTimeout(hideTransitionOverlay, config.directPlayRevealDelayMs);
+        }
         return;
       }
       if (performance.now() < clickDeadline) {
@@ -281,44 +965,473 @@
     tryClick();
   }
 
-  /** Fetches a collection's child items, caching by collectionId so repeat hovers don't re-fetch. */
-  function fetchCollectionItems(collectionId) {
-    if (itemCache.has(collectionId)) return Promise.resolve(itemCache.get(collectionId));
+  /**
+   * Movies/Episodes/Home Video files: waits for the real <video> element to
+   * appear (created by Jellyfin's own player after the real Play/Resume
+   * button was clicked), then applies the target chapter's timestamp
+   * REPEATEDLY at several points in the video's startup (loadedmetadata,
+   * canplay, and once more shortly after playback actually begins) rather
+   * than just once. This is needed because Jellyfin's own "Resume" button
+   * (clicked when a saved position exists) triggers Jellyfin's own jump to
+   * THAT position, which can race our seek — sometimes our seek wins,
+   * sometimes Jellyfin's does, depending on timing. Re-applying several
+   * times makes ours reliably win regardless of that race. Silently gives
+   * up after timeoutMs if no <video> ever appears — worst case the video
+   * just plays from wherever Jellyfin put it, rather than throwing or
+   * leaving anything broken.
+   */
+  /**
+   * onReady (optional) fires once, either when the video actually starts
+   * playing, or — as a fallback — when timeoutMs is reached without a
+   * <video> ever appearing (so a caller relying on this to reveal the
+   * transition overlay never gets stuck waiting forever).
+   */
+  function seekVideoWhenReady(seekSeconds, timeoutMs, onReady) {
+    const deadline = performance.now() + timeoutMs;
+    let readyFired = false;
+    const fireReady = () => {
+      if (readyFired) return;
+      readyFired = true;
+      if (onReady) onReady();
+    };
+    const tryFind = () => {
+      const video = document.querySelector("video");
+      if (video) {
+        const applySeek = () => {
+          try {
+            video.currentTime = seekSeconds;
+          } catch (e) {
+            warn("seekVideoWhenReady: setting currentTime failed", e);
+          }
+        };
+        if (video.readyState >= 1) {
+          // HAVE_METADATA or later — duration/seekable range already known.
+          applySeek();
+        } else {
+          video.addEventListener("loadedmetadata", applySeek, { once: true });
+        }
+        // Re-apply at further lifecycle points, in case Jellyfin's own
+        // resume-position logic jumps the video AFTER our first seek.
+        video.addEventListener("canplay", applySeek, { once: true });
+        video.addEventListener(
+          "playing",
+          () => {
+            setTimeout(applySeek, 150);
+            fireReady();
+          },
+          { once: true }
+        );
+        return;
+      }
+      if (performance.now() < deadline) {
+        setTimeout(tryFind, 50);
+      } else {
+        warn("seekVideoWhenReady: no <video> element appeared in time");
+        fireReady();
+      }
+    };
+    tryFind();
+  }
+
+  /** Parses a "W/H" ratio string (e.g. "16/9") into a numeric width/height value. Returns null if invalid. */
+  function parseAspectRatio(str) {
+    const parts = (str || "").split("/").map((s) => parseFloat(s.trim()));
+    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) return parts[0] / parts[1];
+    return null;
+  }
+
+  /**
+   * TV Seasons / Home Videos (autoDetectAspectRatio): determines ONE tile
+   * shape (as a numeric width/height ratio) to use uniformly across the
+   * whole fan. Each fetched item's own PrimaryImageAspectRatio is first
+   * individually snapped to whichever of config.aspectRatioCandidates it's
+   * closest to, and then whichever candidate was the MOST COMMON match
+   * wins — a frequency/mode approach, not an average. This is deliberately
+   * robust against outliers: e.g. 99 portrait clips and 1 landscape one
+   * won't get averaged into a false "square" result — portrait simply wins
+   * on frequency, since only the one outlier snaps to landscape.
+   * Individual tiles are never shaped independently; that would break the
+   * fan's shared geometry (see buildPreview()). Falls back to
+   * config.fallbackAspectRatio when detection is off or no image data is
+   * available.
+   */
+  function resolveTileAspectRatio(items, config) {
+    const fallback = parseAspectRatio(config.fallbackAspectRatio) || 2 / 3;
+    if (!config.autoDetectAspectRatio) return fallback;
+
+    const ratios = items
+      .map((it) => it.PrimaryImageAspectRatio)
+      .filter((r) => typeof r === "number" && r > 0);
+    if (!ratios.length) return fallback;
+
+    const candidates = (config.aspectRatioCandidates || "")
+      .split(",")
+      .map((s) => parseAspectRatio(s.trim()))
+      .filter((r) => r != null);
+    if (!candidates.length) return fallback;
+
+    const nearestCandidate = (r) => {
+      let best = candidates[0];
+      let bestDist = Math.abs(r - best);
+      candidates.forEach((c) => {
+        const d = Math.abs(r - c);
+        if (d < bestDist) {
+          bestDist = d;
+          best = c;
+        }
+      });
+      return best;
+    };
+
+    const counts = new Map();
+    ratios.forEach((r) => {
+      const snapped = nearestCandidate(r);
+      counts.set(snapped, (counts.get(snapped) || 0) + 1);
+    });
+
+    let winner = candidates[0];
+    let winnerCount = -1;
+    counts.forEach((count, candidate) => {
+      if (count > winnerCount) {
+        winnerCount = count;
+        winner = candidate;
+      }
+    });
+    return winner;
+  }
+
+  /**
+   * Computes the actual tile width to use for a given resolved aspect
+   * ratio. If config defines an explicit posterHeight (TV Seasons and Home
+   * Videos both do), width is derived directly from THAT fixed height —
+   * every tile ends up exactly posterHeight tall, however wide that makes
+   * it. Otherwise (Sets/TV Shows, anchored on posterWidth), falls back to
+   * preserving roughly the same visual AREA as a plain 2:3 poster at
+   * config.posterWidth — since those configs never deviate from 2:3 anyway
+   * (no autoDetectAspectRatio), this always just returns config.posterWidth
+   * unchanged.
+   */
+  function computeTileWidth(config, tileAspectRatio) {
+    if (config.posterHeight) {
+      return config.posterHeight * tileAspectRatio;
+    }
+    const baseRatio = parseAspectRatio(config.fallbackAspectRatio) || 2 / 3;
+    const baseArea = config.posterWidth * (config.posterWidth / baseRatio);
+    return Math.sqrt(baseArea * tileAspectRatio);
+  }
+
+  /**
+   * A stable "reference width" for sizing things that should NOT scale
+   * with the fan's actual (possibly wide) tile width — currently just the
+   * subtile play button. Configs anchored on posterWidth (Sets/TV Shows)
+   * use it directly. Configs anchored on posterHeight instead (TV Seasons,
+   * Home Videos — neither has a posterWidth at all) convert back to an
+   * equivalent width at the base aspect ratio, so the button ends up the
+   * same size either way.
+   */
+  function getButtonSizeReferenceWidth(config) {
+    if (config.posterHeight) {
+      // Always convert back using the standard 2:3 poster-button scale,
+      // regardless of this config's own actual TILE shape (which can be
+      // very different — e.g. 16:9 for chapter previews). Using
+      // config.fallbackAspectRatio here instead was the bug: it's meant to
+      // describe the CONTENT's shape, not the button-size baseline, and
+      // for configs where those two ratios differ (any 16:9-anchored one)
+      // it made the button balloon to roughly 2.7x the intended size.
+      return config.posterHeight / 1.5; // 1.5 === 1 / (2/3)
+    }
+    return config.posterWidth;
+  }
+
+  /**
+   * Fetches a parent item's direct children, caching by parentId so repeat
+   * hovers don't re-fetch. Works unmodified for BoxSets (children =
+   * movies), Series (children = seasons), Seasons (children = episodes),
+   * and Home Video folders (children = sub-folders/videos) — Jellyfin's
+   * getItems with ParentId just returns whatever that item's direct
+   * children are. Fields requests everything any config might need for
+   * display (aspect ratio, year, episode numbers) or client-side sorting
+   * (see sortItemsClientSide()) in one shot, since it's cheap to over-ask.
+   */
+  function fetchChildItems(parentId, config) {
+    if (itemCache.has(parentId)) return Promise.resolve(itemCache.get(parentId));
 
     const api = getApiClient();
     if (!api) {
-      warn("ApiClient not ready, aborting fetch for", collectionId);
+      warn("ApiClient not ready, aborting fetch for", parentId);
       return Promise.reject(new Error("ApiClient not ready"));
     }
     return api
       .getItems(api.getCurrentUserId(), {
-        ParentId: collectionId,
-        SortBy: "PremiereDate",
-        SortOrder: "Ascending",
-        Fields: "PrimaryImageAspectRatio",
-        Limit: CONFIG.maxPosters + 1,
+        ParentId: parentId,
+        SortBy: config.sortBy,
+        SortOrder: config.sortOrder,
+        Fields: "PrimaryImageAspectRatio,ProductionYear,ParentIndexNumber,IndexNumber,DateCreated,PremiereDate,CommunityRating,CriticRating",
+        Limit: config.maxPosters + 1,
       })
       .then((result) => {
-        itemCache.set(collectionId, result);
+        itemCache.set(parentId, result);
         return result;
       })
       .catch((e) => {
-        err("getItems failed for", collectionId, e);
+        err("getItems failed for", parentId, e);
         throw e;
       });
+  }
+
+  /**
+   * Movies/Episodes/Home Video files (fetchMode: "chapters"): fetches a
+   * single video item's own Chapters field (NOT a ParentId-based children
+   * fetch — a video has no children) and wraps its chapters into the same
+   * {Items, TotalRecordCount} shape fetchChildItems()/resolveSkippedFolder()
+   * return, so the rest of showPreview()/buildPreview() can treat a
+   * chapter fan exactly like any other fan without special-casing. Each
+   * synthetic "item" carries the real chapter data needed later
+   * (getChapterPosterUrl(), playItemDirectAtChapter()) as underscore-
+   * prefixed fields; Id is set to the VIDEO's own id (not a real per-
+   * chapter id — chapters aren't separately navigable items), and
+   * Type:"Chapter" flags these to buildPreview() so it knows to use the
+   * chapter image URL builder instead of the normal poster one. Chapters
+   * with no extracted image (ImageTag missing) are skipped entirely —
+   * there'd be nothing to show. Cached by the video's own id, same as any
+   * other fetch.
+   */
+  function fetchItemChapters(itemId, config) {
+    if (itemCache.has(itemId)) return Promise.resolve(itemCache.get(itemId));
+
+    const api = getApiClient();
+    if (!api) {
+      warn("ApiClient not ready, aborting chapter fetch for", itemId);
+      return Promise.reject(new Error("ApiClient not ready"));
+    }
+    return api
+      .getItems(api.getCurrentUserId(), {
+        Ids: itemId,
+        Fields: "Chapters",
+      })
+      .then((result) => {
+        const item = (result.Items || [])[0] || null;
+        const chapters = (item && item.Chapters) || [];
+        const chapterItems = chapters
+          .filter((ch) => ch.ImageTag)
+          .map((ch) => ({
+            Id: itemId,
+            Name: ch.Name || "",
+            IsFolder: false,
+            Type: "Chapter",
+            // The image endpoint needs the chapter's position in the FULL,
+            // unfiltered chapters array — not its position among only the
+            // ones that happen to have images.
+            _chapterIndex: chapters.indexOf(ch),
+            _chapterImageTag: ch.ImageTag,
+            _chapterStartTicks: ch.StartPositionTicks || 0,
+          }));
+        const wrapped = { Items: chapterItems, TotalRecordCount: chapterItems.length };
+        itemCache.set(itemId, wrapped);
+        return wrapped;
+      })
+      .catch((e) => {
+        err("getItems (chapters) failed for", itemId, e);
+        throw e;
+      });
+  }
+
+  /**
+   * Builds a chapter's image URL — Jellyfin's own "Chapter" ImageType
+   * (confirmed via the official @jellyfin/sdk's ImageType enum), addressed
+   * the same way as other indexed image types like Backdrop:
+   * /Items/{itemId}/Images/Chapter/{chapterIndex}. Tries the same
+   * getScaledImageUrl() helper used for posters first (passing type +
+   * index), falling back to manually building the URL via api.getUrl() if
+   * that doesn't support the index parameter the way we expect.
+   */
+  function getChapterPosterUrl(item, api) {
+    const opts = { maxHeight: 300, quality: 90 };
+    if (item._chapterImageTag) opts.tag = item._chapterImageTag;
+    if (typeof api.getScaledImageUrl === "function") {
+      try {
+        const url = api.getScaledImageUrl(item.Id, { type: "Chapter", index: item._chapterIndex, ...opts });
+        if (url) return url;
+      } catch (e) {
+        // fall through to manual construction below
+      }
+    }
+    const query = { maxHeight: "300", quality: "90" };
+    if (item._chapterImageTag) query.tag = item._chapterImageTag;
+    return api.getUrl(`Items/${item.Id}/Images/Chapter/${item._chapterIndex}`, query);
+  }
+
+
+  /**
+   * Home Videos (separateSortForFoldersAndVideos): a small client-side
+   * approximation of Jellyfin's own SortBy behavior, used to re-sort an
+   * already-fetched list of items by a field that may differ from
+   * whatever the server-side fetch itself was sorted by. Supports the
+   * most commonly useful fields (SortName, PremiereDate, DateCreated,
+   * ProductionYear, CommunityRating, CriticRating, Random); anything else
+   * falls back to sorting by Name.
+   */
+  function getClientSortValue(item, sortBy) {
+    switch (sortBy) {
+      case "SortName":
+        return (item.SortName || item.Name || "").toLowerCase();
+      case "PremiereDate":
+        return item.PremiereDate ? new Date(item.PremiereDate).getTime() : 0;
+      case "DateCreated":
+        return item.DateCreated ? new Date(item.DateCreated).getTime() : 0;
+      case "ProductionYear":
+        return item.ProductionYear || 0;
+      case "CommunityRating":
+        return item.CommunityRating || 0;
+      case "CriticRating":
+        return item.CriticRating || 0;
+      default:
+        return (item.Name || "").toLowerCase();
+    }
+  }
+
+  function sortItemsClientSide(items, sortBy, sortOrder) {
+    if (sortBy === "Random") {
+      // Fisher-Yates shuffle.
+      const arr = items.slice();
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = tmp;
+      }
+      return arr;
+    }
+    const arr = items.slice().sort((a, b) => {
+      const va = getClientSortValue(a, sortBy);
+      const vb = getClientSortValue(b, sortBy);
+      if (va < vb) return -1;
+      if (va > vb) return 1;
+      return 0;
+    });
+    if (sortOrder === "Descending") arr.reverse();
+    return arr;
+  }
+
+  /**
+   * Home Videos: if config.separateSortForFoldersAndVideos is true, splits
+   * a folder's children into folders/videos, sorts each group with its own
+   * rule (folderSortBy/folderSortOrder, videoSortBy/videoSortOrder), and
+   * arranges them per config.mixedOrderMode. Has no effect (returns items
+   * unchanged) for any config that doesn't define this switch, or when a
+   * folder's children turn out to be all-folders or all-videos anyway
+   * (nothing to separate).
+   */
+  function applySeparateFolderVideoSort(items, config) {
+    if (!config.separateSortForFoldersAndVideos) return items;
+
+    const folders = items.filter((it) => it.IsFolder);
+    const videos = items.filter((it) => !it.IsFolder);
+    if (!folders.length || !videos.length) return items; // nothing mixed — nothing to separate
+
+    const sortedFolders = sortItemsClientSide(folders, config.folderSortBy, config.folderSortOrder);
+    const sortedVideos = sortItemsClientSide(videos, config.videoSortBy, config.videoSortOrder);
+
+    return config.mixedOrderMode === "videosFirst"
+      ? sortedVideos.concat(sortedFolders)
+      : sortedFolders.concat(sortedVideos);
+  }
+
+  /**
+   * Formats a tile's title text according to whichever config options
+   * apply: Sets' showYearInTitle ("Name (Year)") or TV Seasons' own
+   * showSeasonEpisodeNumberInTitle ("SX:EY - Name"). Falls back to the
+   * plain name if the relevant metadata field is missing, or if neither
+   * option is set for this config (the common case for most types).
+   */
+  function formatTileTitle(item, config) {
+    let title = item.Name || "";
+    if (config.showYearInTitle && item.ProductionYear) {
+      title = `${title} (${item.ProductionYear})`;
+    }
+    if (config.showSeasonEpisodeNumberInTitle && item.ParentIndexNumber != null && item.IndexNumber != null) {
+      title = `S${item.ParentIndexNumber}:E${item.IndexNumber} - ${title}`;
+    }
+    return title;
+  }
+
+  /**
+   * Home Videos: if config.skipFolderLayerNamesEnabled is true, decides
+   * whether to recursively fetch INTO a wrapper sub-folder instead of
+   * showing/navigating to "one folder" — repeated up to
+   * config.maxFolderSkipDepth layers deep in case several such wrapper
+   * layers are stacked.
+   *
+   * The decision: among the fetched children, count how many folders'
+   * names CONTAIN one of config.skipFolderLayerNames — unrelated folders
+   * (e.g. "fotos") never count, no matter how many of those exist. Only if
+   * that count is exactly ONE does anything get skipped; see
+   * skipFolderLayerExactMatchEnabled / skipFolderLayerFuzzyFallbackEnabled
+   * on CONFIG_HOMEVIDEOS for how exact vs. partial matches are handled.
+   *
+   * Used for BOTH the hover-open flow AND the click-on-a-folder-subtile
+   * flow (see buildTile()'s click handler) — same rules apply either way.
+   * Has no effect for Sets/TV Shows, since neither config defines
+   * skipFolderLayerNamesEnabled (undefined is falsy, so skipNames ends up
+   * empty and the function always returns immediately below — a single
+   * plain fetch, same as before). Resolves to {parentId, result}: parentId
+   * is the (possibly deeper) id whose children should actually be
+   * shown/navigated to, and result is that id's raw getItems response.
+   */
+  function resolveSkippedFolder(parentId, config, depth) {
+    return fetchChildItems(parentId, config).then((result) => {
+      const items = result.Items || [];
+      const skipNames = config.skipFolderLayerNamesEnabled
+        ? (config.skipFolderLayerNames || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+        : [];
+
+      if (skipNames.length === 0 || depth >= config.maxFolderSkipDepth) {
+        return { parentId, result };
+      }
+
+      // Candidates: folders whose name CONTAINS one of skipNames.
+      // Unrelated folders (e.g. "fotos") are excluded entirely and never
+      // count toward the ambiguity check below.
+      const candidates = items.filter((it) => {
+        if (!it.IsFolder) return false;
+        const lower = (it.Name || "").toLowerCase();
+        return skipNames.some((skipName) => lower.includes(skipName));
+      });
+
+      let target = null;
+      if (candidates.length === 1) {
+        const candidate = candidates[0];
+        const isExact = skipNames.includes((candidate.Name || "").toLowerCase());
+        if (isExact && config.skipFolderLayerExactMatchEnabled) {
+          target = candidate;
+        } else if (!isExact && config.skipFolderLayerFuzzyFallbackEnabled) {
+          target = candidate;
+        }
+      }
+
+      if (target) {
+        return resolveSkippedFolder(target.Id, config, depth + 1);
+      }
+      return { parentId, result };
+    });
   }
 
   // ---- geometry ----------------------------------------------------------
   /**
    * The preview's pivot point for a given card: horizontally centered, and
-   * positioned so CONFIG.overlap of the middle tile's poster sits inside
+   * positioned so config.overlap of the middle tile's poster sits inside
    * the card while the rest rises above it. Shared by buildPreview() (initial
    * placement) and repositionActive() (keeping it glued to the card).
+   * tileWidth/tileAspectRatio are this preview's actual, resolved tile
+   * dimensions (see computeTileWidth() / resolveTileAspectRatio()) — NOT
+   * always equal to config.posterWidth, since wider ratios (e.g. TV Season
+   * episodes) get a wider tile to preserve visual area.
    */
-  function getPivot(rect) {
+  function getPivot(rect, config, tileWidth, tileAspectRatio) {
+    const posterHeight = tileWidth / tileAspectRatio;
     const x = rect.left + rect.width / 2;
-    const posterCenterY = rect.top + POSTER_HEIGHT * (CONFIG.overlap - 0.5);
-    const y = posterCenterY + CONFIG.lift;
+    const posterCenterY = rect.top + posterHeight * (config.overlap - 0.5);
+    const y = posterCenterY + config.lift;
     return { x, y };
   }
 
@@ -328,20 +1441,68 @@
    * (scale 1.4x) and — in some themes — changes color purely via native CSS
    * ":hover", so asking the browser whether IT considers the button hovered
    * gives us the exact rendered hit-area for free (including the enlarged
-   * state), no geometry math needed.
+   * state), no geometry math needed. Some card types (Home Video folders)
+   * never render this button at all — folders aren't playable — so for
+   * those isInCenterZone() falls back to a purely geometric, invisible
+   * circle in the middle of the card instead (see config.centerHoverZoneRatio).
    */
   function getPlayButton(card) {
-    return card.querySelector(".cardOverlayFab-primary");
+    // ".cardOverlayFab-primary" for normal grid cards (cardBuilder.js);
+    // ".listItemImageButton[data-action='resume']" for the season page's
+    // own episode LIST view (listview.js) — confirmed via real DOM
+    // inspection to be a genuinely different, real Resume/Play button
+    // there, not the same element under a different name.
+    return card.querySelector(".cardOverlayFab-primary, .listItemImageButton[data-action='resume']");
   }
 
-  function isInCenterZone(card) {
+  /**
+   * True if the pointer currently counts as "in the center zone" for
+   * centerHoverOnly mode. Prefers the real play button's native :hover
+   * state (Sets/TV Shows always have one). If the card has no such button
+   * at all — true for Home Video folders and season-list episodes, which
+   * don't render one — falls back to a plain geometric circle, sized via
+   * config.centerHoverZoneRatio (a fraction of the shorter side). That
+   * circle is centered on the card's own ".cardImageContainer" (the actual
+   * thumbnail/image area) when present, NOT the whole card element —
+   * Jellyfin cards include a title-text area below the image as part of
+   * their overall bounding box, which would otherwise shift the computed
+   * center noticeably downward from where the image (and the real button,
+   * when one exists) actually sits. Falls back to the whole card's own
+   * rect if no such image container is found. If centerHoverZoneRatio
+   * isn't set either, there's simply no zone to trigger on for this card.
+   */
+  /**
+   * The rect to use for VISUAL purposes (fan positioning, geometric
+   * center-zone fallback) — deliberately NOT always card.getBoundingClientRect()
+   * itself. Normal grid cards are compact and their own rect is exactly
+   * right, but the season page's episode LIST rows (see Episode's
+   * cardSelector / getPlayButton()) are wide, full-width rows with the
+   * actual thumbnail sitting only at the left edge — using the whole row's
+   * rect would center the fan over empty space instead of the thumbnail.
+   * Falls back to the card's own rect if neither known inner element exists.
+   */
+  function getCardVisualRect(card) {
+    const inner = card.querySelector(".cardImageContainer, .listItemImage");
+    return (inner || card).getBoundingClientRect();
+  }
+
+  function isInCenterZone(card, config) {
     const btn = getPlayButton(card);
-    if (!btn) return false; // no play button on this card — no zone, no trigger
-    try {
-      return btn.matches(":hover");
-    } catch (e) {
-      return false; // ":hover" in .matches() should be universally supported; fail closed if not
+    if (btn) {
+      try {
+        return btn.matches(":hover");
+      } catch (e) {
+        return false; // ":hover" in .matches() should be universally supported; fail closed if not
+      }
     }
+    if (!config || !config.centerHoverZoneRatio) return false;
+    const rect = getCardVisualRect(card);
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const radius = Math.min(rect.width, rect.height) * config.centerHoverZoneRatio;
+    const dx = lastMouse.x - cx;
+    const dy = lastMouse.y - cy;
+    return dx * dx + dy * dy <= radius * radius;
   }
 
   // ---- open/close ----------------------------------------------------------
@@ -365,7 +1526,7 @@
     });
     void a.container.offsetWidth;
     a.tiles.forEach((b, i) => {
-      const delay = (a.tiles.length - 1 - i) * CONFIG.staggerMs;
+      const delay = (a.tiles.length - 1 - i) * a.config.staggerMs;
       b.arm.style.transitionDelay = `${delay}ms`;
       b.arm.style.transform = "rotate(0deg) translateY(0px)";
       b.tile.style.transitionDelay = `${delay}ms`;
@@ -373,7 +1534,7 @@
       b.tile.style.transform = "translate(-50%,-50%) scale(.6)";
     });
     const finished = a.container;
-    setTimeout(() => finished.remove(), CONFIG.closeMs + a.tiles.length * CONFIG.staggerMs);
+    setTimeout(() => finished.remove(), a.config.closeMs + a.tiles.length * a.config.staggerMs);
     active = null;
   }
 
@@ -384,7 +1545,7 @@
    * `canPlay` marks real, playable items (not the "+N" more-badge tile) —
    * only those get the optional replicated focus play-button.
    */
-  function buildTile(container, angle, contentEl, titleText, itemId, canPlay) {
+  function buildTile(container, angle, contentEl, titleText, itemId, canPlay, config, isFolder, chapterStartTicks) {
     const arm = document.createElement("div");
     arm.className = "jf-preview-arm";
 
@@ -404,7 +1565,7 @@
       tile.appendChild(titleEl);
     }
 
-    if (CONFIG.subtileFocusPlayButton && canPlay && itemId) {
+    if (config.subtileFocusPlayButton && canPlay && itemId) {
       const playBtn = document.createElement("button");
       playBtn.type = "button";
       // Note: deliberately NOT using Jellyfin's "cardOverlayButton-hover"
@@ -423,7 +1584,11 @@
         e.preventDefault();
         e.stopPropagation();
         clearActive(true);
-        playItemDirect(itemId);
+        if (chapterStartTicks != null) {
+          playItemDirectAtChapter(itemId, chapterStartTicks, config);
+        } else {
+          playItemDirect(itemId, config);
+        }
       });
       tile.appendChild(playBtn);
     }
@@ -437,7 +1602,21 @@
         e.preventDefault();
         e.stopPropagation();
         clearActive(true);
-        goToItem(itemId);
+        if (isFolder) {
+          // Same wrapper-folder-skipping rules as the hover-open flow (see
+          // resolveSkippedFolder) — if this folder ALSO turns out to be a
+          // pointless single wrapper layer, jump straight through it
+          // instead of landing on an empty middle folder.
+          resolveSkippedFolder(itemId, config, 0)
+            .then(({ parentId }) => goToFolder(parentId))
+            .catch(() => goToFolder(itemId)); // fall back to the original target if the check itself fails
+        } else {
+          // Chapter tiles: clicking anywhere except the play button
+          // navigates normally to the item's own details page, same as
+          // every other tile type — the seek-to-chapter behavior is
+          // exclusive to the play button (see above).
+          goToItem(itemId);
+        }
       });
     }
 
@@ -447,31 +1626,77 @@
     return { arm, tile, titleEl, titleInner, marqueeMeasured: false, base: angle, cur: angle, tgt: angle, rot: 0, focused: false };
   }
 
-  function buildPreview(card, rect, items, totalCount) {
+  function buildPreview(card, rect, items, totalCount, config, moreTargetId, moreTargetIsFolder) {
     const api = getApiClient();
     const container = document.createElement("div");
     container.className = "jf-preview-container";
 
-    const pivot = getPivot(rect);
+    // Home Videos: optionally re-order folders/videos with independent
+    // sort rules — no-op for every other config (and for Home Video
+    // folders that aren't actually mixed).
+    items = applySeparateFolderVideoSort(items, config);
+
+    // One shared tile shape (width/height ratio) for the whole fan — see
+    // resolveTileAspectRatio() for why this isn't per-tile. Defaults to
+    // plain 2/3 for configs that don't define autoDetectAspectRatio at all
+    // (Sets/TV Shows). tileWidth is then sized to either match posterHeight
+    // exactly (TV Seasons/Home Videos) or preserve visual area (Sets/TV
+    // Shows) — see computeTileWidth().
+    const tileAspectRatio = resolveTileAspectRatio(items, config);
+    const tileWidth = computeTileWidth(config, tileAspectRatio);
+
+    // Size-dependent CSS custom properties for this specific preview
+    // instance — see the stylesheet comment near the top for why these
+    // aren't fixed values baked into the shared <style> tag.
+    container.style.setProperty("--jf-poster-width", `${tileWidth}px`);
+    // Fixed size, based on a stable reference width (NOT the actual,
+    // possibly-wide tileWidth) — otherwise the button would grow along
+    // with wider tiles (e.g. TV Season episodes).
+    container.style.setProperty("--jf-playbtn-size", `${getButtonSizeReferenceWidth(config) * config.subtilePlayButtonSizeRatio}px`);
+    container.style.setProperty("--jf-tile-aspect-ratio", String(tileAspectRatio));
+
+    const pivot = getPivot(rect, config, tileWidth, tileAspectRatio);
     container.style.left = `${pivot.x}px`;
     container.style.top = `${pivot.y}px`;
 
-    const shown = items.slice(0, CONFIG.maxPosters);
+    const shown = items.slice(0, config.maxPosters);
     const extra = totalCount - shown.length;
     const n = shown.length + (extra > 0 ? 1 : 0);
-    const spread = n > 1 ? Math.min(CONFIG.maxSpreadDeg, (n - 1) * CONFIG.degPerPoster) : 0;
-    const step = n > 1 ? spread / (n - 1) : CONFIG.degPerPoster;
+    const spread = n > 1 ? Math.min(config.maxSpreadDeg, (n - 1) * config.degPerPoster) : 0;
+    const step = n > 1 ? spread / (n - 1) : config.degPerPoster;
 
     const tiles = [];
     shown.forEach((item, i) => {
       const angle = -spread / 2 + i * step;
       const img = document.createElement("img");
       img.className = "jf-preview-poster";
-      img.src = getPosterUrl(item, api);
+      // Movies/Episodes/Home Video files (fetchMode: "chapters"): these are
+      // synthetic "items" wrapping chapter data (see fetchItemChapters()),
+      // not real Jellyfin items — they need the dedicated chapter image
+      // URL builder instead of the normal poster one.
+      img.src = item.Type === "Chapter" ? getChapterPosterUrl(item, api) : getPosterUrl(item, api);
       img.alt = item.Name || "";
       // Hide broken posters instead of showing the browser's broken-image icon.
       img.onerror = () => { img.style.visibility = "hidden"; };
-      tiles.push(buildTile(container, angle, img, item.Name || "", item.Id, true));
+      // Sets/TV Shows: children are always playable movies/seasons, so
+      // canPlay is always true and isFolder always false — unchanged from
+      // before. Home Videos: a folder's direct children can be a MIX of
+      // sub-folders (not playable, and clicking navigates via the folder
+      // route rather than the item-details route) and actual videos
+      // (playable, normal item-details navigation). Chapters: always
+      // playable (canPlay true, isFolder false), but ALSO carry a
+      // chapterStartTicks value that routes clicks to seek-to-timestamp
+      // playback instead of normal navigation (see buildTile()).
+      //
+      // Deliberately checks item.Type === "Folder" (the literal BaseItemKind),
+      // NOT the generic item.IsFolder flag — IsFolder is true for ANY
+      // container item (Seasons, Series, BoxSets all have children too),
+      // which wrongly routed Season tiles (under TV Shows) to the folder
+      // navigation route instead of their own normal details page.
+      const isFolder = item.Type === "Folder";
+      const canPlay = !isFolder;
+      const chapterStartTicks = item.Type === "Chapter" ? item._chapterStartTicks : null;
+      tiles.push(buildTile(container, angle, img, formatTileTitle(item, config), item.Id, canPlay, config, isFolder, chapterStartTicks));
     });
 
     if (extra > 0) {
@@ -480,8 +1705,14 @@
       const badge = document.createElement("div");
       badge.className = "jf-preview-poster jf-preview-more";
       badge.textContent = `+${extra}`;
-      // "+N" badge opens the collection itself, where the rest can be seen.
-      tiles.push(buildTile(container, angle, badge, "", card.dataset.id, false));
+      // "+N" badge opens the parent item itself, where the rest can be seen.
+      // Uses moreTargetId (the resolved, possibly-skipped-into folder) when
+      // given, falling back to the hovered card's own id — Sets/TV Shows
+      // always pass their own id here since they never skip anything.
+      // moreTargetIsFolder routes the click correctly: true for Home Videos
+      // (target is a genuine Folder item), false for Sets/TV Shows (target
+      // is a BoxSet/Series, a proper details-page item).
+      tiles.push(buildTile(container, angle, badge, "", moreTargetId != null ? moreTargetId : card.dataset.id, false, config, !!moreTargetIsFolder));
     }
 
     document.body.appendChild(container);
@@ -497,9 +1728,9 @@
 
     requestAnimationFrame(() => {
       tiles.forEach((b, i) => {
-        b.arm.style.transitionDelay = `${i * CONFIG.staggerMs}ms`;
-        b.arm.style.transform = `rotate(${b.base}deg) translateY(-${CONFIG.lift}px)`;
-        b.tile.style.transitionDelay = `${i * CONFIG.staggerMs}ms`;
+        b.arm.style.transitionDelay = `${i * config.staggerMs}ms`;
+        b.arm.style.transform = `rotate(${b.base}deg) translateY(-${config.lift}px)`;
+        b.tile.style.transitionDelay = `${i * config.staggerMs}ms`;
         b.tile.style.opacity = "1";
         b.tile.style.transform = "translate(-50%,-50%) scale(1)";
       });
@@ -508,9 +1739,12 @@
     // Default stacking before any hover: leftmost card on top.
     tiles.forEach((b, i) => { b.arm.style.zIndex = String(tiles.length - i); });
 
-    const previewHalfWidth = Math.sin(((spread / 2) * Math.PI) / 180) * CONFIG.lift + CONFIG.posterWidth / 2;
+    const previewHalfWidth = Math.sin(((spread / 2) * Math.PI) / 180) * config.lift + tileWidth / 2;
     active = {
       card,
+      config, // the type config that this open preview belongs to
+      tileAspectRatio, // resolved width/height ratio shared by all tiles in this fan
+      tileWidth, // actual resolved tile width in px
       container,
       tiles,
       pivotX: pivot.x,
@@ -523,7 +1757,7 @@
       manual: false,
       raf: null,
       // Don't hijack the tiles until the opening animation has played out.
-      readyAt: performance.now() + n * CONFIG.staggerMs + 500,
+      readyAt: performance.now() + n * config.staggerMs + 500,
       closeTimeout: null,
     };
   }
@@ -583,10 +1817,10 @@
     const loop = () => {
       if (active !== a) return;
       a.tiles.forEach((b) => {
-        b.cur += (b.tgt - b.cur) * CONFIG.smoothing;
+        b.cur += (b.tgt - b.cur) * a.config.smoothing;
         const rotTgt = b.focused ? -b.cur : 0;
-        b.rot += (rotTgt - b.rot) * CONFIG.smoothing;
-        b.arm.style.transform = `rotate(${b.cur}deg) translateY(-${CONFIG.lift}px)`;
+        b.rot += (rotTgt - b.rot) * a.config.smoothing;
+        b.arm.style.transform = `rotate(${b.cur}deg) translateY(-${a.config.lift}px)`;
         b.tile.style.transform = `translate(-50%,-50%) rotate(${b.rot}deg)`;
       });
       a.raf = requestAnimationFrame(loop);
@@ -606,9 +1840,10 @@
    */
   function isWithinPreviewBounds(a, x, y) {
     const r = a.rect;
+    const posterHeight = a.tileWidth / a.tileAspectRatio;
     const left = Math.min(r.left, a.pivotX - a.previewHalfWidth);
     const right = Math.max(r.right, a.pivotX + a.previewHalfWidth);
-    const top = a.pivotY - CONFIG.lift - POSTER_HEIGHT / 2 - 10;
+    const top = a.pivotY - a.config.lift - posterHeight / 2 - 10;
     const bottom = r.bottom;
     return x >= left && x <= right && y >= top && y <= bottom;
   }
@@ -620,9 +1855,10 @@
     // Focus tracking only applies above the top third of the card;
     // the lower two-thirds leave the preview at rest.
     const r = a.rect;
+    const posterHeight = a.tileWidth / a.tileAspectRatio;
     const left = Math.min(r.left, a.pivotX - a.previewHalfWidth);
     const right = Math.max(r.right, a.pivotX + a.previewHalfWidth);
-    const top = a.pivotY - CONFIG.lift - POSTER_HEIGHT / 2 - 10;
+    const top = a.pivotY - a.config.lift - posterHeight / 2 - 10;
     const bottom = r.top + r.height / 3;
 
     if (x < left || x > right || y < top || y > bottom) {
@@ -634,7 +1870,7 @@
     // Tile centers sit at sin(angle) * lift, so asin() inverts that to map the
     // pointer's x-offset onto the arc — a tile focuses exactly when the pointer
     // lines up with where it visually sits, keeping the outermost tiles reachable.
-    const t = Math.max(-1, Math.min(1, (x - a.pivotX) / CONFIG.lift));
+    const t = Math.max(-1, Math.min(1, (x - a.pivotX) / a.config.lift));
     const theta = (Math.asin(t) * 180) / Math.PI;
 
     let idx = 0;
@@ -656,8 +1892,8 @@
     const sigma = a.step;
     a.tiles.forEach((b) => {
       const d = b.base - theta;
-      const push = CONFIG.hoverPushDeg * Math.sign(d) * Math.exp(-((d / sigma) * (d / sigma)));
-      b.tgt = b.base * CONFIG.hoverSpreadScale + (b.focused ? 0 : push);
+      const push = a.config.hoverPushDeg * Math.sign(d) * Math.exp(-((d / sigma) * (d / sigma)));
+      b.tgt = b.base * a.config.hoverSpreadScale + (b.focused ? 0 : push);
     });
   }
 
@@ -666,9 +1902,6 @@
     lastMouse.y = e.clientY;
     onPointerMove(e.clientX, e.clientY);
 
-    // centerHoverOnly: drive the "open" trigger off the pointer entering/leaving
-    // the small center zone, instead of the plain mouseover/mouseout below.
-    if (!CONFIG.centerHoverOnly) return;
     if (active && inActivePreview(e.target)) return; // pointer is on the preview itself, not the underlying card
 
     // If a preview is already open, its own reachable area (card + tile fan)
@@ -676,17 +1909,25 @@
     // what lets you travel from the play button towards a tile without it
     // closing en route. Only once you leave that whole area do we close it
     // and fall through to evaluating whatever card is now under the pointer.
+    // This branch only APPLIES if the open preview's own config uses
+    // centerHoverOnly — otherwise (full-card mode) mouseover/mouseout own
+    // opening/closing entirely, and this handler has nothing to do.
     if (active) {
+      if (!active.config.centerHoverOnly) return;
       if (isWithinPreviewBounds(active, e.clientX, e.clientY)) return;
       clearActive(false);
     }
 
     const card = e.target && e.target.closest ? e.target.closest(CARD_SELECTOR) : null;
+    const typeInfo = resolveTypeConfig(card);
 
-    if (!card) {
-      if (zoneCard) { clearTimeout(hoverTimers.get(zoneCard)); zoneCard = null; }
+    // No card, or a recognized card whose config doesn't use centerHoverOnly
+    // — nothing for this handler to do (mouseover/mouseout own it instead).
+    if (!typeInfo || !typeInfo.config.centerHoverOnly) {
+      if (zoneCard && card !== zoneCard) { clearTimeout(hoverTimers.get(zoneCard)); zoneCard = null; }
       return;
     }
+    const config = typeInfo.config;
 
     if (card !== zoneCard) {
       // Pointer moved onto a different card (or from blank space) — drop any
@@ -695,12 +1936,12 @@
       zoneCard = null;
     }
 
-    const inZone = isInCenterZone(card);
+    const inZone = isInCenterZone(card, config);
     if (inZone) {
       if (zoneCard !== card) {
         zoneCard = card;
         clearTimeout(hoverTimers.get(card));
-        hoverTimers.set(card, setTimeout(() => showPreview(card), CONFIG.hoverDelay));
+        hoverTimers.set(card, setTimeout(() => showPreview(card), config.centerHoverOnlyDelay));
       }
     } else if (zoneCard === card) {
       clearTimeout(hoverTimers.get(card));
@@ -713,8 +1954,12 @@
     if (isScrolling) return; // never open mid-scroll
     if (active && active.card === card) return; // already open for this card
 
-    const collectionId = card.dataset.id;
-    if (!collectionId) {
+    const typeInfo = resolveTypeConfig(card);
+    if (!typeInfo) return;
+    const config = typeInfo.config;
+
+    const parentId = card.dataset.id;
+    if (!parentId) {
       warn("card has no data-id attribute — selector matched something unexpected", card);
       return;
     }
@@ -723,21 +1968,69 @@
       return;
     }
 
-    fetchCollectionItems(collectionId)
-      .then((result) => {
+    // Movies/Episodes/Home Video files (fetchMode: "chapters") fetch a
+    // single video's own chapter list instead of a container's children —
+    // fetchItemChapters() returns the same {Items, TotalRecordCount} shape
+    // resolveSkippedFolder() does, so everything below this point works
+    // identically either way, with no further special-casing needed.
+    const fetchPromise =
+      typeInfo.fetchMode === "chapters"
+        ? fetchItemChapters(parentId, config).then((result) => ({ parentId, result }))
+        : resolveSkippedFolder(parentId, config, 0);
+
+    fetchPromise
+      .then(({ parentId: effectiveParentId, result }) => {
         // ":hover" can be stale right after a scroll; confirm with elementFromPoint too.
         const under = lastMouse.x >= 0 ? document.elementFromPoint(lastMouse.x, lastMouse.y) : null;
         const stillOver = card.matches(":hover") || (under && card.contains(under));
         if (!stillOver) return;
         // centerHoverOnly: the fetch is async, so also re-check the pointer is
         // still within the center zone by the time the response comes back.
-        if (CONFIG.centerHoverOnly && !isInCenterZone(card)) return;
+        if (config.centerHoverOnly && !isInCenterZone(card, config)) return;
 
         const items = result.Items || [];
+        const totalCount = result.TotalRecordCount || items.length;
+
+        // TV Shows: a single-season series has nothing meaningful to fan
+        // out as its own seasons — skip entirely (only checked if the
+        // config defines it, so this has no effect on Sets/Collections).
+        if (config.skipSingleSeason && totalCount <= 1) {
+          // Optional fallback: show that one season's EPISODES instead of
+          // doing nothing, using CONFIG_TVSEASONS' own settings for them —
+          // exactly as if the season card itself had been hovered.
+          if (config.singleSeasonShowEpisodesInstead && items.length === 1) {
+            const season = items[0];
+            const seasonConfig = TYPE_CONFIGS.Season.config;
+            fetchChildItems(season.Id, seasonConfig)
+              .then((episodeResult) => {
+                // Recompute fresh — this is a second, separate async fetch
+                // that can resolve well after the first one did, so the
+                // outer "under"/"stillOver" from above may be stale by now.
+                const underNow = lastMouse.x >= 0 ? document.elementFromPoint(lastMouse.x, lastMouse.y) : null;
+                const stillOverNow = card.matches(":hover") || (underNow && card.contains(underNow));
+                if (!stillOverNow) return;
+                if (config.centerHoverOnly && !isInCenterZone(card, config)) return;
+
+                const episodeItems = episodeResult.Items || [];
+                const episodeTotal = episodeResult.TotalRecordCount || episodeItems.length;
+                if (!episodeItems.length) return;
+
+                clearActive(true);
+                buildPreview(card, getCardVisualRect(card), episodeItems, episodeTotal, seasonConfig, season.Id, false);
+              })
+              .catch((e) => err("singleSeasonShowEpisodesInstead fetch failed:", e));
+          }
+          return;
+        }
+
         if (!items.length) return;
 
         clearActive(true);
-        buildPreview(card, card.getBoundingClientRect(), items, result.TotalRecordCount || items.length);
+        // Only Home Videos' resolved "+N more" target is itself a Folder
+        // item (needing the list.html route) — Sets/TV Shows always point
+        // at a BoxSet/Series (a normal details-page item).
+        const moreTargetIsFolder = typeInfo.key === "homevideos";
+        buildPreview(card, getCardVisualRect(card), items, totalCount, config, effectiveParentId, moreTargetIsFolder);
       })
       .catch((e) => err("showPreview failed:", e));
   }
@@ -750,6 +2043,10 @@
   document.addEventListener("mouseover", (e) => {
     const card = e.target.closest(CARD_SELECTOR);
     if (!card || card.contains(e.relatedTarget)) return;
+    const typeInfo = resolveTypeConfig(card);
+    if (!typeInfo) return;
+    const config = typeInfo.config;
+
     // Coming back from the preview onto its own card shouldn't restart anything.
     if (active && active.card === card && inActivePreview(e.relatedTarget)) return;
 
@@ -758,14 +2055,17 @@
     // centerHoverOnly: the mousemove listener above owns the open-trigger timer
     // in this mode (it only starts once the pointer is actually within the
     // center zone), so skip the plain "anywhere on the card" trigger here.
-    if (CONFIG.centerHoverOnly) return;
+    if (config.centerHoverOnly) return;
 
-    hoverTimers.set(card, setTimeout(() => showPreview(card), CONFIG.hoverDelay));
+    hoverTimers.set(card, setTimeout(() => showPreview(card), config.hoverDelay));
   });
 
   document.addEventListener("mouseout", (e) => {
     const card = e.target.closest(CARD_SELECTOR);
     if (card) {
+      const typeInfo = resolveTypeConfig(card);
+      const config = typeInfo ? typeInfo.config : null;
+
       if (card.contains(e.relatedTarget)) return;
       // The preview overlaps the card, so moving onto a tile fires the card's mouseout too — ignore it.
       if (active && active.card === card && inActivePreview(e.relatedTarget)) return;
@@ -776,7 +2076,7 @@
       // instead (it also covers the arc the tiles occupy beyond the card's
       // own edges) — closing here on the plain card boundary would cut that
       // off short, before the pointer ever reaches a tile.
-      if (!CONFIG.centerHoverOnly && active && active.card === card) clearActive(false);
+      if (config && !config.centerHoverOnly && active && active.card === card) clearActive(false);
       return;
     }
 
@@ -784,7 +2084,7 @@
     if (active && inActivePreview(e.target)) {
       const to = e.relatedTarget;
       if (inActivePreview(to) || (to && active.card.contains(to))) return;
-      if (!CONFIG.centerHoverOnly) clearActive(false);
+      if (!active.config.centerHoverOnly) clearActive(false);
     }
   });
 
@@ -795,12 +2095,12 @@
 
   function repositionActive() {
     if (!active) return;
-    const rect = active.card.getBoundingClientRect();
+    const rect = getCardVisualRect(active.card);
     if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) {
       clearActive(true);
       return;
     }
-    const pivot = getPivot(rect);
+    const pivot = getPivot(rect, active.config, active.tileWidth, active.tileAspectRatio);
     active.rect = rect;
     active.pivotX = pivot.x;
     active.pivotY = pivot.y;
@@ -822,16 +2122,22 @@
     isScrolling = true;
     clearActive(true);
     clearTimeout(scrollEndTimer);
+    // Note: the settle duration itself can't be type-specific — we don't
+    // know which card (if any) the pointer will end up over until AFTER
+    // scrolling has actually stopped. CONFIG_SETS.scrollSettleMs is used as
+    // the shared baseline for this one timing; each config's own
+    // scrollSettleMs value only affects its own hover-open delay elsewhere.
     scrollEndTimer = setTimeout(() => {
       isScrolling = false;
       // Reopen for whichever card the (stationary) pointer landed on.
       const under = lastMouse.x >= 0 ? document.elementFromPoint(lastMouse.x, lastMouse.y) : null;
       const card = under && under.closest ? under.closest(CARD_SELECTOR) : null;
       if (card) {
-        if (CONFIG.centerHoverOnly && !isInCenterZone(card)) return;
+        const typeInfo = resolveTypeConfig(card);
+        if (typeInfo && typeInfo.config.centerHoverOnly && !isInCenterZone(card, typeInfo.config)) return;
         showPreview(card);
       }
-    }, CONFIG.scrollSettleMs);
+    }, CONFIG_SETS.scrollSettleMs);
   }, { passive: true, capture: true });
 
   window.addEventListener("resize", queueReposition);
