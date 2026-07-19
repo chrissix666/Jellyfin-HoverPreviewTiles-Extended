@@ -455,11 +455,6 @@
     subtilePlayButtonSizeRatio: 0.4,
     directPlayButtonTimeoutMs: 4000,
     directPlayRevealDelayMs: 500,
-    // Resets the resume position before a chapter seek (see
-    // resetPlaybackPosition()). Works cleanly for Movies. Left true here;
-    // set to false in CONFIG_EPISODES, where it was found to sometimes
-    // trigger Jellyfin's own episode-to-episode "played" logic instead.
-    resetPositionBeforeChapterPlay: true,
   };
 
   const CONFIG_EPISODES = {
@@ -494,15 +489,6 @@
     subtilePlayButtonSizeRatio: 0.4,
     directPlayButtonTimeoutMs: 4000,
     directPlayRevealDelayMs: 500,
-    // Confirmed via live testing: resetting the resume position before a
-    // chapter seek on an EPISODE can trigger Jellyfin's own episode-to-
-    // episode "played" logic, incorrectly marking it watched regardless of
-    // actual progress. Movies don't have this system at all, so the reset
-    // stays safe/on for them (see CONFIG_MOVIES). Skipping the reset here
-    // means the original "sometimes lands on the resume point instead of
-    // the chosen chapter" risk can reappear for episodes with an existing
-    // resume position — an accepted trade-off for now.
-    resetPositionBeforeChapterPlay: false,
   };
 
   const CONFIG_HOMEVIDEOFILES = {
@@ -529,9 +515,6 @@
     subtilePlayButtonSizeRatio: 0.4,
     directPlayButtonTimeoutMs: 4000,
     directPlayRevealDelayMs: 500,
-    // Same as CONFIG_MOVIES — Home Video files aren't part of Jellyfin's
-    // episode-to-episode "played" system, so the reset stays safe/on.
-    resetPositionBeforeChapterPlay: true,
   };
 
   // =========================================================================
@@ -732,46 +715,6 @@
     window.location.href = prefix + query;
   }
 
-  /**
-   * Movies/Episodes/Home Video files: resets an item's saved resume
-   * position to 0 via Jellyfin's own documented UserData endpoint
-   * (POST /Users/{userId}/Items/{itemId}/UserData with
-   * {PlaybackPositionTicks: 0}) — same effect as watching the item to
-   * completion or manually clearing "Continue Watching" for it. Used right
-   * before a chapter-seek play: with no resume position left, Jellyfin's
-   * details page only renders the real "Play" button (never "Resume"),
-   * which was the actual source of the "sometimes jumps to the resume
-   * point instead of the chosen chapter" bug — Resume triggers Jellyfin's
-   * OWN jump to ITS saved position, racing our own seek. We deliberately
-   * do NOT restore the old resume value afterwards: the resulting real
-   * playback session reports its own progress as it goes, which naturally
-   * re-establishes a (more relevant, up to date) resume point on its own.
-   */
-  function resetPlaybackPosition(itemId) {
-    const api = getApiClient();
-    if (!api || typeof api.ajax !== "function") {
-      warn("resetPlaybackPosition: ApiClient.ajax not available, skipping reset");
-      return Promise.resolve();
-    }
-    const userId = typeof api.getCurrentUserId === "function" ? api.getCurrentUserId() : null;
-    if (!userId) return Promise.resolve();
-    try {
-      return Promise.resolve(
-        api.ajax({
-          type: "POST",
-          url: api.getUrl(`Users/${userId}/Items/${itemId}/UserData`),
-          data: JSON.stringify({ PlaybackPositionTicks: 0 }),
-          contentType: "application/json",
-        })
-      ).catch((e) => {
-        warn("resetPlaybackPosition failed for", itemId, e);
-      });
-    } catch (e) {
-      warn("resetPlaybackPosition: api.ajax threw synchronously", e);
-      return Promise.resolve();
-    }
-  }
-
   // ---- direct play (subtileFocusPlayButton) -----------------------------
   // We confirmed Jellyfin's internal playbackManager isn't reachable from an
   // injected script (no global exposure, no delegated click system, and a
@@ -853,45 +796,7 @@
    */
   function playItemDirectAtChapter(itemId, startTicks, config) {
     const seekSeconds = (startTicks || 0) / 10000000;
-    showTransitionOverlay();
-    // Double rAF first (same reasoning as playItemDirect() — makes sure the
-    // overlay has actually been painted before anything else happens), THEN
-    // (if enabled for this config) reset the resume position, THEN
-    // navigate. Doing the reset before the overlay is visible would
-    // reintroduce the exact flash-of-content issue we already solved for
-    // the non-chapter case, since resetPlaybackPosition() is itself a
-    // network round-trip.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        // The overlay is a MODAL dialog — it blocks the entire page until we
-        // hide it ourselves. If resetPlaybackPosition() ever throws
-        // synchronously, hangs, or doesn't behave like a real Promise (can
-        // vary across ApiClient versions), a bare .then() chain could just
-        // never fire, permanently freezing the whole page behind the modal.
-        // This "settle once, however we get there" guard plus a hard
-        // timeout makes sure we always proceed one way or another.
-        let settled = false;
-        const proceed = () => {
-          if (settled) return;
-          settled = true;
-          goToItem(itemId);
-          runDirectPlayClickSequence(itemId, config, seekSeconds);
-        };
-        if (!config.resetPositionBeforeChapterPlay) {
-          proceed();
-          return;
-        }
-        setTimeout(proceed, 800); // hard ceiling — proceed no matter what if the reset is slow/stuck
-        try {
-          Promise.resolve(resetPlaybackPosition(itemId))
-            .catch((e) => warn("resetPlaybackPosition rejected", e))
-            .then(proceed);
-        } catch (e) {
-          warn("resetPlaybackPosition threw synchronously", e);
-          proceed();
-        }
-      });
-    });
+    playItemDirect(itemId, config, seekSeconds);
   }
 
   function runDirectPlayClickSequence(itemId, config, seekSeconds) {
