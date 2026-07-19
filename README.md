@@ -130,13 +130,9 @@ All shared settings, height-anchored, with `centerHoverZoneRatio` active (folder
 
 All shared settings, height-anchored, with `fallbackAspectRatio` fixed at `"16/9"` (chapter images are always this shape, so `autoDetectAspectRatio` isn't used). No `sortBy`/`sortOrder` — chapters always come back chronologically. Plus:
 
-**`resetPositionBeforeChapterPlay`** (`true` / `false`) — resets the saved resume position before jumping to a chapter, so Jellyfin doesn't jump to an old resume point instead of the chosen chapter.
-
 ### `CONFIG_EPISODES` — Episode cards, fans out an episode's own chapters
 
 Same structure as `CONFIG_MOVIES`, with `centerHoverZoneRatio` also active (fallback for a season's own episode list view, which has no real play button). One difference:
-
-**`resetPositionBeforeChapterPlay`** is `false` here specifically — enabling it was found to sometimes incorrectly mark an episode as fully watched, regardless of actual progress.
 
 ### `CONFIG_HOMEVIDEOFILES` — individual Home Video file cards, fans out their own chapters
 
