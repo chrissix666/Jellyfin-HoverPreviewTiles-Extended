@@ -12,7 +12,7 @@ Note: To make this work, after a lot of experimenting and testing, I couldn't fi
 - **TV Show Seasons** (`CONFIG_TVSEASONS`) — hovering a Season card fans out its episodes. Tile shape auto-detects from the episodes' own thumbnails (usually widescreen) instead of assuming a poster shape.
 - **Home Videos** (`CONFIG_HOMEVIDEOS`) — hovering a Home Video folder fans out its contents, which can be a mix of sub-folders and actual video files. Pointless single wrapper folders (e.g. a folder that only contains one sub-folder called "videos") get skipped automatically, both when opening the fan and when clicking into a folder tile. Folders and videos can optionally be sorted independently of each other.
 - **Chapter previews** (`CONFIG_MOVIES`, `CONFIG_EPISODES`, `CONFIG_HOMEVIDEOFILES`) — hovering a Movie, Episode, or individual Home Video file card fans out *that video's own chapters* instead of child items, using Jellyfin's real chapter images. Clicking a chapter tile's play button jumps straight into the video, seeked to that exact timestamp.
-- **Global settings** — the hover preview can be switched off entirely on the Home page and/or inside "More Like This" sections, independent of the per-type configs, for every card type at once.
+- **Global settings** — the hover preview can be switched off entirely on the Home page and/or inside "More Like This" sections & "Next Up" for TV Shows, independent of the per-type configs, for every card type at once.
 
 
 # Configuration
