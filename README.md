@@ -149,11 +149,11 @@ Identical in structure and values to `CONFIG_MOVIES`.
 
 ### `GLOBAL_SETTINGS` — applies across every card type at once
 
-**`enablePreviewsOnHome`** (`true` / `false`) — disables the hover preview entirely on the Home page (`#/home.html`), for every card type.
+**`enablePreviewsOnHome`** (`true` / `false`) — enables/disables the hover preview entirely on the Home page (`#/home.html`), for every card type.
 
-**`enablePreviewsOnSimilarSection`** (`true` / `false`) — disables the hover preview entirely within a "More Like This" section, for every card type.
+**`enablePreviewsOnSimilarSection`** (`true` / `false`) — enables/disables the hover preview entirely within a "More Like This" section, for every card type.
 
-**`enablePreviewsOnNextUp`** (`true` / `false`) — disables the hover preview entirely within the "Next Up" section for TV Shows.
+**`enablePreviewsOnNextUp`** (`true` / `false`) — enables/disables the hover preview entirely within the "Next Up" section for TV Shows.
 
 ## Tested on
 
