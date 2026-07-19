@@ -124,6 +124,12 @@ All shared settings, height-anchored, with `centerHoverZoneRatio` active (folder
 
 **`maxFolderSkipDepth`** (integer) — safety cap against endlessly/circularly nested folder structures.
 
+*What's a wrapper folder? A wrapper folder is a fixed, consistently-named subfolder — for example "videos" — placed one level inside every home video folder, holding nothing but the actual video files. The outer folder can be named anything ("Birthday 2023," "Italy Trip"), but this inner one stays the same name everywhere, so scripts and backup tools always know exactly where to find the videos, no matter what the outer folder is called. Everything else that belongs with that folder — files like cover art, poster.jpg, folder.jpg, fanart.jpg and folders like backups, links, leftover cuts, photos, images, screenshots — lives next to this subfolder, not inside it, keeping "just the videos" cleanly separate from everything else.<br>
+Example with `skipFolderLayerNames: "videos"`:<br>
+- Only "videos" present → skipped (exact match)<br>
+- Only "videos Instagram" present → skipped (fuzzy fallback)<br>
+- Both "videos Instagram" and "videos Youtube" present → **not** skipped, ambiguous — both shown as their own tiles
+
 ## Group B — Chapter preview
 
 ### `CONFIG_MOVIES` — Movie cards, fans out a movie's own chapters
