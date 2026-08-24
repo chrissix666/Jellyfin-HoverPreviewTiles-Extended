@@ -1,3 +1,7 @@
+[Jellyfin Projects](https://linktr.ee/JellyfinProjects) | [Kodi Projects](https://linktr.ee/KodiProjects)
+
+---
+
 # Jellyfin Hover Preview Tiles Extended
 
 This is a fork and further development of the **[Jellyfin – Collection Preview](https://gist.github.com/malte9799/691a52da31f703d176d4f913c5de5fe4)** Script by malte9799 on [Github](https://github.com/malte9799) and [reddit](https://www.reddit.com/user/Malte9799/), originally published as a GitHub Gist. **All credits goes to him!**
