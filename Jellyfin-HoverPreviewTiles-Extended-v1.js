@@ -28,6 +28,215 @@
  */
 (function () {
   "use strict";
+
+  /* jfcompat 1.0 - one script for Jellyfin web 10.10.7 and 12.1.
+   * Paste this block unchanged at the top of a script (inside its IIFE).
+   * It is pure: no side effects at load, no globals except window.jfcompat
+   * (set only when absent, for console checks; scripts use the local const).
+   * Rule: on 10.10.7 every answer equals what the scripts computed before. */
+  const jfcompat = (function () {
+      'use strict';
+      const VERSION = '1.0';
+
+      // ---------- version ----------
+      // The web client ships with the server, so the server version decides.
+      // ApiClient.appVersion() is not used: inside Jellyfin Media Player or the
+      // Android app NativeShell replaces it with the app's own number
+      // (apphost.js 10.10.7:417-419, 12.1:399-401).
+      // Before ApiClient knows the server, <html data-theme> is a 12.x-only hint
+      // (12.1 scripts/themeManager.js:46; 10.10.7 never sets it).
+      function serverVersion() {
+          try {
+              const api = window.ApiClient;
+              const v = api && typeof api.serverVersion === 'function' && api.serverVersion();
+              if (v) {
+                  const [major, minor] = String(v).split('.').map(Number);
+                  return { major: major, minor: minor || 0, raw: String(v) };
+              }
+          } catch (e) { /* ignore */ }
+          return null;
+      }
+      // 12.x model: modern layout default, routes without .html, legacy auth off.
+      // 10.11 was not audited; treated as the new model (live-check before relying on it).
+      function isNewModel() {
+          const v = serverVersion();
+          if (v) return v.major > 10 || (v.major === 10 && v.minor >= 11);
+          return document.documentElement.hasAttribute('data-theme');
+      }
+
+      // ---------- routes ----------
+      // getRoute(): { name, params } with '#!' and '.html' removed, so one name
+      // fits both: home, movies, tv, list, search, details, video, music, livetv ...
+      function getRoute() {
+          const h = window.location.hash || '';
+          const m = /^#!?\/([^?]*)(?:\?(.*))?$/.exec(h);
+          const name = m ? m[1].replace(/\.html$/i, '').toLowerCase() : '';
+          return { name: name, params: new URLSearchParams(m && m[2] ? m[2] : '') };
+      }
+      function isRoute() {
+          const n = getRoute().name;
+          for (let i = 0; i < arguments.length; i++) if (arguments[i] === n) return true;
+          return false;
+      }
+      // routeUrl('list', {parentId}) -> '#/list.html?...' on 10.10.7, '#/list?...' on 12.1.
+      // details and video never had '.html' (10.10.7 appRouter.js:447,472).
+      const NO_SUFFIX = ['details', 'video', ''];
+      function routeUrl(name, params) {
+          const q = params ? new URLSearchParams(params).toString() : '';
+          const suffix = (!isNewModel() && NO_SUFFIX.indexOf(name) < 0) ? '.html' : '';
+          return '#/' + name + suffix + (q ? '?' + q : '');
+      }
+      // Navigate inside the app (no reload). Emby.Page.show strips '#' and '!'
+      // in both versions (appRouter.js 10.10.7:516, 12.1:552).
+      function go(name, params) {
+          const url = routeUrl(name, params);
+          if (window.Emby && window.Emby.Page && typeof window.Emby.Page.show === 'function') {
+              window.Emby.Page.show(url.slice(1));
+          } else {
+              window.location.hash = url;
+          }
+      }
+
+      // ---------- layout ----------
+      // 10.10.7: MUI only when localStorage.layout === 'experimental' (RootAppRouter.tsx:19-20).
+      // 12.1:    classic only for desktop-legacy | mobile-legacy | tv
+      //          (constants/layoutMode.ts, layoutManager.js:41); everything else,
+      //          including a stale 'experimental', is MUI.
+      // Both versions pick the layout once per page load, so the DOM answer is cached.
+      const LEGACY_12 = ['desktop-legacy', 'mobile-legacy', 'tv'];
+      const MUI_SEARCH = '.MuiAppBar-root a[href^="#/search"]';
+      let cachedLayout = null;
+      function getLayout() {
+          if (cachedLayout) return cachedLayout;
+          // 1) what the page shows (not on the video route: 12.1 draws an osdHeader there;
+          //    not on dashboard pages: there the classic header is hidden in both layouts)
+          if (getRoute().name !== 'video') {
+              if (document.querySelector(MUI_SEARCH)) return (cachedLayout = 'mui');
+              const sk = document.querySelector('.skinHeader:not(.osdHeader)');
+              // .skinHeader is position:fixed, so offsetParent is always null; a
+              // display:none ancestor (AppHeader isHidden) leaves it without client rects.
+              if (sk && sk.getClientRects().length > 0 && sk.querySelector('.headerRight')) return (cachedLayout = 'classic');
+          }
+          // 2) the setting, read the way each version reads it (not cached)
+          let v = '';
+          try { v = localStorage.getItem('layout') || ''; } catch (e) { /* ignore */ }
+          if (isNewModel()) return LEGACY_12.indexOf(v) >= 0 ? 'classic' : 'mui';
+          return v === 'experimental' ? 'mui' : 'classic';
+      }
+      function isMui() { return getLayout() === 'mui'; }
+
+      // ---------- header ----------
+      // MUI: the search link sits in the right-hand button box with SyncPlay and
+      // RemotePlay (components/toolbar/AppToolbar.tsx:84-85, both versions).
+      // Its href is '#/search.html' on 10.10.7 and '#/search' on 12.1.
+      // Classic: only a SHOWN header counts. 12.1 keeps the hidden classic header
+      // in the DOM in the modern layout (AppHeader.tsx:20), and both versions hide
+      // it on dashboard pages; a button placed there would never be seen.
+      function isShown(el) { return !!el && el.getClientRects().length > 0; }
+      function getSearchLink() {
+          if (isMui()) return document.querySelector(MUI_SEARCH);
+          const b = document.querySelector('.skinHeader:not(.osdHeader) .headerRight .headerSearchButton');
+          return isShown(b) ? b : null;
+      }
+      function getHeaderBox() {
+          if (isMui()) { const a = document.querySelector(MUI_SEARCH); return a ? a.parentElement : null; }
+          const box = document.querySelector('.skinHeader:not(.osdHeader) .headerRight');
+          return isShown(box) ? box : null;
+      }
+      // cb(box | null) whenever the box may have changed (the MUI toolbar unmounts
+      // on /video and has no buttons on public pages). setTimeout, not rAF, so it
+      // also runs in background tabs.
+      function onHeaderBoxChange(cb) {
+          let queued = false;
+          const run = function () { queued = false; cb(getHeaderBox()); };
+          const start = function () {
+              if (!document.body) { setTimeout(start, 200); return; }
+              run();
+              new MutationObserver(function () {
+                  if (!queued) { queued = true; setTimeout(run, 50); }
+              }).observe(document.body, { childList: true, subtree: true });
+          };
+          start();
+      }
+
+      // ---------- theme ----------
+      function getThemeId() {
+          const d = document.documentElement.getAttribute('data-theme');          // 12.1
+          if (d) return d;
+          const link = document.querySelector('link[href*="themes/"][href$="theme.css"]'); // both
+          const m = link && /themes\/([^/]+)\/theme\.css/.exec(link.getAttribute('href') || '');
+          return m ? m[1] : 'dark';
+      }
+      // MUI IconButton (color inherit) hover = action.active at action.hoverOpacity.
+      // 12.1 exposes it as CSS variables (themes/index.ts, prefix 'jf'); the
+      // fallbacks are the 10.10.7 values (dark 8 % white, light/appletv 4 % black).
+      function getMuiHoverColor() {
+          const old = /^(light|appletv)$/.test(getThemeId()) ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.08)';
+          if (!document.documentElement.hasAttribute('data-theme')) return old;
+          const cs = getComputedStyle(document.documentElement);
+          const ch = cs.getPropertyValue('--jf-palette-action-activeChannel').trim();
+          const op = cs.getPropertyValue('--jf-palette-action-hoverOpacity').trim();
+          return (ch && op) ? 'rgba(' + ch + ' / ' + op + ')' : old;
+      }
+
+      // ---------- auth for raw fetch ----------
+      // 12.1 ignores X-Emby-Token, X-MediaBrowser-Token, X-Emby-Authorization and
+      // ?api_key= unless EnableLegacyAuthorization (AuthorizationContext.cs:93-110).
+      // The Authorization header and ?ApiKey= work in both versions.
+      function accessToken() {
+          try {
+              const api = window.ApiClient;
+              const t = api && typeof api.accessToken === 'function' && api.accessToken();
+              if (t) return t;
+          } catch (e) { /* ignore */ }
+          try {
+              const c = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+              const s = (c.Servers || []).find(function (x) { return x.AccessToken; });
+              return s ? s.AccessToken : null;
+          } catch (e) { return null; }
+      }
+      function authHeaders(extra) {
+          const h = Object.assign({}, extra || {});
+          const t = accessToken();
+          if (t) h.Authorization = 'MediaBrowser Token="' + t + '"';
+          return h;
+      }
+      // Adds ?ApiKey=<token> to a URL that cannot carry a header (img src, download link).
+      function withApiKey(url) {
+          const t = accessToken();
+          if (!t) return url;
+          return url + (url.indexOf('?') < 0 ? '?' : '&') + 'ApiKey=' + encodeURIComponent(t);
+      }
+
+      // ---------- pages ----------
+      // React library pages in the 12.1 modern layout (apps/modern/routes/asyncRoutes/user.ts).
+      // In 10.10.7 'experimental' some of these were React too; live-check before reuse there.
+      const REACT_LIBRARY_ROUTES = ['movies', 'tv', 'music', 'livetv', 'boxsets', 'homevideos',
+          'musicvideos', 'mixed', 'books', 'playlists', 'home'];
+      function isReactLibraryPage() {
+          return isNewModel() && isMui() && REACT_LIBRARY_ROUTES.indexOf(getRoute().name) >= 0;
+      }
+
+      // ---------- video OSD ----------
+      // Legacy view in both (10.10.7 controllers/playback/video/index.html:30;
+      // 12.1 apps/legacy/controllers/playback/video/index.html:30).
+      function getOsdBar() {
+          return document.querySelector('.videoOsdBottom .osdControls .buttons');
+      }
+
+      const api = {
+          VERSION: VERSION, serverVersion: serverVersion, isNewModel: isNewModel,
+          getRoute: getRoute, isRoute: isRoute, routeUrl: routeUrl, go: go,
+          getLayout: getLayout, isMui: isMui,
+          getSearchLink: getSearchLink, getHeaderBox: getHeaderBox, onHeaderBoxChange: onHeaderBoxChange,
+          getThemeId: getThemeId, getMuiHoverColor: getMuiHoverColor,
+          accessToken: accessToken, authHeaders: authHeaders, withApiKey: withApiKey,
+          isReactLibraryPage: isReactLibraryPage, getOsdBar: getOsdBar
+      };
+      if (!window.jfcompat) window.jfcompat = api;
+      return api;
+  })();
+  /* end jfcompat 1.0 */
   if (window.__jfCollectionPreviewLoaded) return;
   window.__jfCollectionPreviewLoaded = true;
 
@@ -592,14 +801,14 @@
    * Given a card element, returns its {key, cardSelector, config} entry, or
    * null if unrecognized OR excluded by GLOBAL_SETTINGS (Home page /
    * "More Like This" / "Next Up" sections — see there for details).
-   * Checking hash with .includes() rather than an exact match covers both
-   * the older "#!/home.html" and current "#/home.html" URL styles.
+   * jfcompat.isRoute("home") covers "#!/home.html", "#/home.html" (10.10.x)
+   * and "#/home" (12.x).
    */
   function resolveTypeConfig(card) {
     if (!card || !card.dataset) return null;
     const typeInfo = TYPE_CONFIGS[card.dataset.type];
     if (!typeInfo || typeInfo.config.enabled === false) return null;
-    if (!GLOBAL_SETTINGS.enablePreviewsOnHome && window.location.hash.includes("/home.html")) return null;
+    if (!GLOBAL_SETTINGS.enablePreviewsOnHome && jfcompat.isRoute("home")) return null;
     if (!GLOBAL_SETTINGS.enablePreviewsOnSimilarSection && card.closest(".similarContent")) return null;
     if (!GLOBAL_SETTINGS.enablePreviewsOnNextUp && card.closest(".nextUpItems")) return null;
     return typeInfo;
@@ -712,7 +921,8 @@
    * Navigate INTO a folder (browse its contents) — a different route than
    * goToItem()'s item-details page. Confirmed via the actual URL Jellyfin
    * itself uses when browsing into a Home Video folder:
-   * "#/list.html?parentId=X&serverId=Y", not "#/details?id=X". Used for
+   * "#/list.html?parentId=X&serverId=Y" ("#/list?..." in 12.x), not
+   * "#/details?id=X". Used for
    * Home Video sub-folder subtiles and their "+N more" tile — Sets/TV Shows
    * never call this, since their "+N more" target (a BoxSet/Series) is a
    * proper details-page item, not a plain folder.
@@ -721,15 +931,16 @@
     const api = getApiClient();
     const serverId = api && typeof api.serverId === "function" ? api.serverId() : null;
     const query = `parentId=${folderId}${serverId ? `&serverId=${serverId}` : ""}`;
+    const route = jfcompat.routeUrl("list").slice(1); // "/list.html" (10.10.x) or "/list" (12.x)
     try {
       if (window.Emby && window.Emby.Page && typeof window.Emby.Page.show === "function") {
-        window.Emby.Page.show(`/list.html?${query}`);
+        window.Emby.Page.show(`${route}?${query}`);
         return;
       }
     } catch (e) {
       warn("Emby.Page.show failed, falling back to hash navigation", e);
     }
-    const prefix = window.location.hash.startsWith("#!") ? "#!/list.html?" : "#/list.html?";
+    const prefix = (window.location.hash.startsWith("#!") ? "#!" : "#") + route + "?";
     window.location.href = prefix + query;
   }
 
