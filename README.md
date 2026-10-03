@@ -164,7 +164,7 @@ Identical in structure and values to `CONFIG_MOVIES`.
 
 - Windows 11
 - Chrome
-- Jellyfin Web 10.10.7
+- Jellyfin Web 10.10.7 and 12.0+
 - Jellyfin JavaScript Injector
 
 ## License
