@@ -29,14 +29,15 @@
 (function () {
   "use strict";
 
-  /* jfcompat 1.0 - one script for Jellyfin web 10.10.7 and 12.1.
+  /* jfcompat 1.1 - one script for Jellyfin web 10.10.7 and 12.1 (1.1: layout
+   * setting scheme of 10.11 = 10.10, isModernLayoutModel).
    * Paste this block unchanged at the top of a script (inside its IIFE).
    * It is pure: no side effects at load, no globals except window.jfcompat
    * (set only when absent, for console checks; scripts use the local const).
    * Rule: on 10.10.7 every answer equals what the scripts computed before. */
   const jfcompat = (function () {
       'use strict';
-      const VERSION = '1.0';
+      const VERSION = '1.1';
 
       // ---------- version ----------
       // The web client ships with the server, so the server version decides.
@@ -56,12 +57,28 @@
           } catch (e) { /* ignore */ }
           return null;
       }
-      // 12.x model: modern layout default, routes without .html, legacy auth off.
-      // 10.11 was not audited; treated as the new model (live-check before relying on it).
+      // New model (>= 10.11): routes without .html, no Trailers tab on the
+      // Movies pages. Audited 2026-10-02 against web 10.11.11 (appRouter.js:404,
+      // moviesrecommended.js:229-241, apps/experimental/routes/movies/index.tsx:46-51).
+      // The layout setting is NOT part of it: 10.11 still has the 10.10 scheme,
+      // see isModernLayoutModel().
       function isNewModel() {
           const v = serverVersion();
           if (v) return v.major > 10 || (v.major === 10 && v.minor >= 11);
           return document.documentElement.hasAttribute('data-theme');
+      }
+
+      // Layout setting scheme of 12.x: modern by default, 'desktop-legacy' /
+      // 'mobile-legacy' / 'tv' classic (constants/layoutMode.ts, apphost.js
+      // 12.0:185-186). 10.10 and 10.11 instead: classic by default, MUI only for
+      // 'experimental' (layoutManager.js identical in 10.10.7 and 10.11.11,
+      // RootAppRouter.tsx 10.11.11:21-22). Without a server version the 12.x
+      // hint of isNewModel() decides (10.11 sets data-theme too; the DOM check
+      // in getLayout() comes first anyway).
+      function isModernLayoutModel() {
+          const v = serverVersion();
+          if (v) return v.major >= 12;
+          return isNewModel();
       }
 
       // ---------- routes ----------
@@ -120,7 +137,7 @@
           // 2) the setting, read the way each version reads it (not cached)
           let v = '';
           try { v = localStorage.getItem('layout') || ''; } catch (e) { /* ignore */ }
-          if (isNewModel()) return LEGACY_12.indexOf(v) >= 0 ? 'classic' : 'mui';
+          if (isModernLayoutModel()) return LEGACY_12.indexOf(v) >= 0 ? 'classic' : 'mui';
           return v === 'experimental' ? 'mui' : 'classic';
       }
       function isMui() { return getLayout() === 'mui'; }
@@ -236,7 +253,7 @@
       if (!window.jfcompat) window.jfcompat = api;
       return api;
   })();
-  /* end jfcompat 1.0 */
+  /* end jfcompat 1.1 */
   if (window.__jfCollectionPreviewLoaded) return;
   window.__jfCollectionPreviewLoaded = true;
 
@@ -244,11 +261,13 @@
   // ACCESS CONTROL
   // ============================================================
   // Only runs the script on the OS platforms listed below.
-  // Values: 'windows' | 'android' | 'ios' | 'macos' | 'linux' | 'chromeos'
+  // Values: 'windows' | 'android' | 'ios' | 'macos' | 'linux' | 'chromeos' | 'xbox'
   const ALLOWED_PLATFORMS = ["windows"];
   function detectPlatform() {
     const ua = (navigator.userAgent || "").toLowerCase();
     if (ua.includes("android")) return "android";
+    // The Xbox app reports "Windows NT 10.0; ... Xbox" (TV layout, no mouse).
+    if (ua.includes("xbox")) return "xbox";
     if (ua.includes("windows")) return "windows";
     if (ua.includes("iphone") || ua.includes("ipad")) return "ios";
     if (ua.includes("mac os")) return "macos";
@@ -760,10 +779,12 @@
     // there, while leaving them fully working everywhere else.
     enablePreviewsOnSimilarSection: true,
     // Master on/off switch for the hover preview specifically within the
-    // "Next Up" section (confirmed container: .nextUpItems, found on the
-    // Home page — Next Up cards are Episodes, part of the TV Shows
-    // family) — applies to every card type equally. Set to false to
-    // disable previews there, while leaving them fully working elsewhere.
+    // "Next Up" sections (series details page: .nextUpItems; TV Shows
+    // "Suggestions" tab: #nextUpItems; Home page: the section whose title
+    // links to the Next Up list — the TV layout draws that title without
+    // a link, so Home is not covered there) — applies to every card type
+    // equally. Set to false to disable previews there, while leaving them
+    // fully working elsewhere.
     enablePreviewsOnNextUp: true,
   };
 
@@ -810,8 +831,17 @@
     if (!typeInfo || typeInfo.config.enabled === false) return null;
     if (!GLOBAL_SETTINGS.enablePreviewsOnHome && jfcompat.isRoute("home")) return null;
     if (!GLOBAL_SETTINGS.enablePreviewsOnSimilarSection && card.closest(".similarContent")) return null;
-    if (!GLOBAL_SETTINGS.enablePreviewsOnNextUp && card.closest(".nextUpItems")) return null;
+    if (!GLOBAL_SETTINGS.enablePreviewsOnNextUp && isInNextUpSection(card)) return null;
     return typeInfo;
+  }
+
+  // "Next Up" in each place it appears (see GLOBAL_SETTINGS.enablePreviewsOnNextUp).
+  // Home sections are ".verticalSection" blocks (homesections.js); the
+  // Next Up one links its title to "#/list(.html)?type=nextup" (appRouter.js).
+  function isInNextUpSection(card) {
+    if (card.closest(".nextUpItems, #nextUpItems")) return true;
+    const section = card.closest(".verticalSection");
+    return !!(section && section.querySelector('.sectionTitleTextButton[href*="type=nextup"]'));
   }
 
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -876,13 +906,36 @@
   document.head.appendChild(style);
 
   // ---- state ----------------------------------------------------------
-  const itemCache = new Map();        // parentId -> {Items, TotalRecordCount} (shared; ids never collide across types)
+  const itemCache = new Map();        // parentId -> {value: {Items, TotalRecordCount}, at} (shared; ids never collide across types)
+  const ITEM_CACHE_TTL_MS = 5 * 60 * 1000; // re-fetch after 5 min, so new episodes/movies show up without a reload
+  const itemRunTimeSeconds = new Map(); // video id -> its length in seconds (tells it apart from Cinema Mode intros)
   const hoverTimers = new WeakMap();  // card -> pending "open" timeout
   let active = null;                  // currently open preview's state (shape defined in buildPreview); active.config is the type config that opened it
   const lastMouse = { x: -1, y: -1 }; // last known pointer position (used after scroll/fetch settle)
   let isScrolling = false;
   let scrollEndTimer = null;
   let zoneCard = null;                 // centerHoverOnly: card whose center-zone currently holds the pointer
+
+  // ---- item cache (with expiry) --------------------------------------------
+  function cacheGet(id) {
+    const entry = itemCache.get(id);
+    if (!entry) return null;
+    if (performance.now() - entry.at > ITEM_CACHE_TTL_MS) {
+      itemCache.delete(id);
+      return null;
+    }
+    return entry.value;
+  }
+  function cacheSet(id, value) {
+    const now = performance.now();
+    // Drop expired entries now and then, so the cache does not only grow.
+    if (itemCache.size > 200) {
+      itemCache.forEach((entry, key) => {
+        if (now - entry.at > ITEM_CACHE_TTL_MS) itemCache.delete(key);
+      });
+    }
+    itemCache.set(id, { value, at: now });
+  }
 
   // ---- Jellyfin API helpers ---------------------------------------------
   function getApiClient() {
@@ -951,7 +1004,8 @@
   // What DOES reliably work: navigating to the item's real details page
   // (same mechanism as goToItem above) and then clicking Jellyfin's own,
   // genuinely-wired Play/Resume button there — ".mainDetailButtons .btnPlay"
-  // / ".btnResume" — exactly as a user would. A full-viewport overlay masks
+  // (data-action="resume") or ".btnReplay" (data-action="play", play from
+  // the start) — exactly as a user would. A full-viewport overlay masks
   // the brief in-between moment so it reads as "instant play" rather than a
   // visible page flip. This relies on the browser still treating the
   // resulting click as user-initiated (needed for audio/video autoplay)
@@ -1000,7 +1054,7 @@
     }, 260);
   }
 
-  function playItemDirect(itemId, config, seekSeconds) {
+  function playItemDirect(itemId, config, seekSeconds, expectedSeconds) {
     showTransitionOverlay();
     // Double rAF: a style change is only guaranteed to have been PAINTED by
     // the time two animation frames have passed. Without this, navigation
@@ -1010,7 +1064,7 @@
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         goToItem(itemId);
-        runDirectPlayClickSequence(itemId, config, seekSeconds);
+        runDirectPlayClickSequence(itemId, config, seekSeconds, expectedSeconds);
       });
     });
   }
@@ -1025,10 +1079,12 @@
    */
   function playItemDirectAtChapter(itemId, startTicks, config) {
     const seekSeconds = (startTicks || 0) / 10000000;
-    playItemDirect(itemId, config, seekSeconds);
+    // The item's own length (known from the chapter fetch) lets the seek
+    // skip Cinema Mode intros that play first in the same <video>.
+    playItemDirect(itemId, config, seekSeconds, itemRunTimeSeconds.get(itemId) || null);
   }
 
-  function runDirectPlayClickSequence(itemId, config, seekSeconds) {
+  function runDirectPlayClickSequence(itemId, config, seekSeconds, expectedSeconds) {
     const clickDeadline = performance.now() + config.directPlayButtonTimeoutMs;
     const tryClick = () => {
       // goToItem() only kicks off navigation asynchronously and returns
@@ -1069,15 +1125,17 @@
       // clicking Resume makes Jellyfin jump to its OWN saved resume
       // position, which can then race our own seek (sometimes winning,
       // sometimes losing, depending on timing) instead of landing on the
-      // chapter we actually asked for. Normal (non-chapter) direct play
-      // keeps preferring Resume, since resuming where you left off is the
-      // whole point there.
+      // chapter we actually asked for. In both 10.10.7 and 12.1 ".btnPlay"
+      // IS the Resume button (data-action="resume") and play-from-start is
+      // ".btnReplay" (data-action="play"), shown only for a resumable item;
+      // otherwise ".btnPlay" already starts at 0. Normal (non-chapter)
+      // direct play keeps ".btnPlay", since resuming where you left off is
+      // the whole point there.
       const btn =
         seekSeconds != null
-          ? container.querySelector(".btnPlay:not(.hide)") ||
-            container.querySelector(".btnResume:not(.hide)")
-          : container.querySelector(".btnResume:not(.hide)") ||
-            container.querySelector(".btnPlay:not(.hide)");
+          ? container.querySelector(".btnReplay:not(.hide)") ||
+            container.querySelector(".btnPlay:not(.hide)")
+          : container.querySelector(".btnPlay:not(.hide)");
       if (btn) {
         btn.click();
         if (seekSeconds != null) {
@@ -1087,7 +1145,7 @@
           // can take noticeably longer to finish rendering (extra series/
           // season breadcrumb data) than movie pages, which a fixed delay
           // tuned for movies doesn't account for.
-          seekVideoWhenReady(seekSeconds, config.directPlayButtonTimeoutMs, hideTransitionOverlay);
+          seekVideoWhenReady(seekSeconds, config.directPlayButtonTimeoutMs, hideTransitionOverlay, expectedSeconds);
         } else {
           // Non-chapter direct play: unchanged, fixed buffer giving
           // Jellyfin's own visible reaction (loading state, player
@@ -1125,43 +1183,101 @@
    * onReady (optional) fires once, either when the video actually starts
    * playing, or — as a fallback — when timeoutMs is reached without a
    * <video> ever appearing (so a caller relying on this to reveal the
-   * transition overlay never gets stuck waiting forever).
+   * transition overlay never gets stuck waiting forever). Once a <video>
+   * is found, a second hard fallback of timeoutMs lifts the overlay even
+   * if playback never starts (playback error, unsupported codec): the
+   * overlay is a modal <dialog>, so it would otherwise block the page
+   * until Esc.
+   *
+   * expectedSeconds (optional) is the item's own length. With Cinema Mode
+   * on, Jellyfin plays intros first in the same <video>; the seek is then
+   * applied only to the media whose duration matches the item (within 2 %
+   * or 5 s). Without it, the first media counts, as before.
+   *
+   * Each startup point (loadedmetadata, canplay, playing + 150 ms) seeks
+   * once per media source; after the item's own playback has started all
+   * listeners are removed, so a later canplay (user seek, re-buffer) or
+   * playing (pause/resume) never jumps back to the chapter.
    */
-  function seekVideoWhenReady(seekSeconds, timeoutMs, onReady) {
+  const INTRO_WAIT_MAX_MS = 15 * 60 * 1000; // stop waiting for the item after intros of up to 15 min
+  function seekVideoWhenReady(seekSeconds, timeoutMs, onReady, expectedSeconds) {
     const deadline = performance.now() + timeoutMs;
     let readyFired = false;
+    let readyTimer = null;
     const fireReady = () => {
       if (readyFired) return;
       readyFired = true;
+      clearTimeout(readyTimer);
       if (onReady) onReady();
+    };
+    const isMainMedia = (video) => {
+      if (!expectedSeconds) return true;
+      const d = video.duration;
+      if (!isFinite(d) || !(d > 0)) return true; // length unknown (live-like stream): as before
+      return Math.abs(d - expectedSeconds) <= Math.max(5, expectedSeconds * 0.02);
+    };
+    const watchVideo = (video) => {
+      let src = null;
+      let done = {};
+      let finished = false;
+      let giveUpTimer = null;
+      const applySeek = () => {
+        try {
+          video.currentTime = seekSeconds;
+        } catch (e) {
+          warn("seekVideoWhenReady: setting currentTime failed", e);
+        }
+      };
+      // Runs fn once per media source at this startup point, and only for
+      // the item itself (not an intro).
+      const step = (name, fn) => () => {
+        if (finished) return;
+        if (video.currentSrc !== src) {
+          src = video.currentSrc;
+          done = {};
+        }
+        if (done[name] || !isMainMedia(video)) return;
+        done[name] = true;
+        fn();
+      };
+      const stop = () => {
+        finished = true;
+        clearTimeout(giveUpTimer);
+        video.removeEventListener("loadedmetadata", onMeta);
+        video.removeEventListener("canplay", onCanPlay);
+        video.removeEventListener("playing", onPlaying);
+      };
+      const onMeta = step("loadedmetadata", applySeek);
+      // Re-apply at further lifecycle points, in case Jellyfin's own
+      // resume-position logic jumps the video AFTER our first seek.
+      const onCanPlay = step("canplay", applySeek);
+      const onMainPlaying = step("playing", () => {
+        setTimeout(applySeek, 150);
+        stop();
+      });
+      const onPlaying = () => {
+        // Any playback (an intro too) reveals the page.
+        fireReady();
+        onMainPlaying();
+      };
+      video.addEventListener("loadedmetadata", onMeta);
+      video.addEventListener("canplay", onCanPlay);
+      video.addEventListener("playing", onPlaying);
+      giveUpTimer = setTimeout(stop, INTRO_WAIT_MAX_MS);
+      if (video.readyState >= 1) {
+        // HAVE_METADATA or later — duration/seekable range already known.
+        onMeta();
+      }
     };
     const tryFind = () => {
       const video = document.querySelector("video");
       if (video) {
-        const applySeek = () => {
-          try {
-            video.currentTime = seekSeconds;
-          } catch (e) {
-            warn("seekVideoWhenReady: setting currentTime failed", e);
-          }
-        };
-        if (video.readyState >= 1) {
-          // HAVE_METADATA or later — duration/seekable range already known.
-          applySeek();
-        } else {
-          video.addEventListener("loadedmetadata", applySeek, { once: true });
-        }
-        // Re-apply at further lifecycle points, in case Jellyfin's own
-        // resume-position logic jumps the video AFTER our first seek.
-        video.addEventListener("canplay", applySeek, { once: true });
-        video.addEventListener(
-          "playing",
-          () => {
-            setTimeout(applySeek, 150);
-            fireReady();
-          },
-          { once: true }
-        );
+        // Hard fallback: lift the overlay even if 'playing' never comes.
+        readyTimer = setTimeout(() => {
+          if (!readyFired) warn("seekVideoWhenReady: playback did not start in time, revealing the page");
+          fireReady();
+        }, timeoutMs);
+        watchVideo(video);
         return;
       }
       if (performance.now() < deadline) {
@@ -1295,7 +1411,8 @@
    * (see sortItemsClientSide()) in one shot, since it's cheap to over-ask.
    */
   function fetchChildItems(parentId, config) {
-    if (itemCache.has(parentId)) return Promise.resolve(itemCache.get(parentId));
+    const cached = cacheGet(parentId);
+    if (cached) return Promise.resolve(cached);
 
     const api = getApiClient();
     if (!api) {
@@ -1311,7 +1428,7 @@
         Limit: config.maxPosters + 1,
       })
       .then((result) => {
-        itemCache.set(parentId, result);
+        cacheSet(parentId, result);
         return result;
       })
       .catch((e) => {
@@ -1338,7 +1455,8 @@
    * other fetch.
    */
   function fetchItemChapters(itemId, config) {
-    if (itemCache.has(itemId)) return Promise.resolve(itemCache.get(itemId));
+    const cached = cacheGet(itemId);
+    if (cached) return Promise.resolve(cached);
 
     const api = getApiClient();
     if (!api) {
@@ -1352,6 +1470,7 @@
       })
       .then((result) => {
         const item = (result.Items || [])[0] || null;
+        if (item && item.RunTimeTicks) itemRunTimeSeconds.set(itemId, item.RunTimeTicks / 10000000);
         const chapters = (item && item.Chapters) || [];
         const chapterItems = chapters
           .filter((ch) => ch.ImageTag)
@@ -1368,7 +1487,7 @@
             _chapterStartTicks: ch.StartPositionTicks || 0,
           }));
         const wrapped = { Items: chapterItems, TotalRecordCount: chapterItems.length };
-        itemCache.set(itemId, wrapped);
+        cacheSet(itemId, wrapped);
         return wrapped;
       })
       .catch((e) => {
@@ -1627,6 +1746,7 @@
     return (inner || card).getBoundingClientRect();
   }
 
+  const DEFAULT_CENTER_HOVER_ZONE_RATIO = 0.22; // same as the Folder/Episode configs
   function isInCenterZone(card, config) {
     const btn = getPlayButton(card);
     if (btn) {
@@ -1636,11 +1756,17 @@
         return false; // ":hover" in .matches() should be universally supported; fail closed if not
       }
     }
-    if (!config || !config.centerHoverZoneRatio) return false;
+    // Mobile and TV layouts draw no play button on any card
+    // (cardBuilder.js: only layoutManager.desktop), so there every card type
+    // gets the geometric circle. In the desktop layout a card without a
+    // button stays closed, as the config text says.
+    let ratio = config ? config.centerHoverZoneRatio : 0;
+    if (!ratio && config && !document.documentElement.classList.contains("layout-desktop")) ratio = DEFAULT_CENTER_HOVER_ZONE_RATIO;
+    if (!ratio) return false;
     const rect = getCardVisualRect(card);
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    const radius = Math.min(rect.width, rect.height) * config.centerHoverZoneRatio;
+    const radius = Math.min(rect.width, rect.height) * ratio;
     const dx = lastMouse.x - cx;
     const dy = lastMouse.y - cy;
     return dx * dx + dy * dy <= radius * radius;
@@ -1957,16 +2083,25 @@
     });
     const loop = () => {
       if (active !== a) return;
+      let moving = false;
       a.tiles.forEach((b) => {
         b.cur += (b.tgt - b.cur) * a.config.smoothing;
         const rotTgt = b.focused ? -b.cur : 0;
         b.rot += (rotTgt - b.rot) * a.config.smoothing;
         b.arm.style.transform = `rotate(${b.cur}deg) translateY(-${a.config.lift}px)`;
         b.tile.style.transform = `translate(-50%,-50%) rotate(${b.rot}deg)`;
+        if (Math.abs(b.tgt - b.cur) > 0.01 || Math.abs(rotTgt - b.rot) > 0.01) moving = true;
       });
-      a.raf = requestAnimationFrame(loop);
+      // Settled: no frames until the pointer moves again (wakeLoop).
+      a.raf = moving ? requestAnimationFrame(loop) : 0;
     };
+    a.loop = loop;
     a.raf = requestAnimationFrame(loop);
+  }
+
+  // Restarts the smoothing loop after it went idle.
+  function wakeLoop(a) {
+    if (a.manual && !a.raf && a.loop && active === a) a.raf = requestAnimationFrame(a.loop);
   }
 
   /**
@@ -2005,6 +2140,7 @@
     if (x < left || x > right || y < top || y > bottom) {
       setFocused(null);
       a.tiles.forEach((b) => { b.tgt = b.base; });
+      wakeLoop(a);
       return;
     }
 
@@ -2036,9 +2172,19 @@
       const push = a.config.hoverPushDeg * Math.sign(d) * Math.exp(-((d / sigma) * (d / sigma)));
       b.tgt = b.base * a.config.hoverSpreadScale + (b.focused ? 0 : push);
     });
+    wakeLoop(a);
   }
 
+  // Touch taps also send compatibility mouse events (and leave :hover on
+  // the tapped element), e.g. on a Windows touch laptop; only a mouse (or
+  // pen) opens a fan.
+  let lastPointerType = "mouse";
+  const notePointer = (e) => { lastPointerType = e.pointerType || "mouse"; };
+  document.addEventListener("pointerdown", notePointer, { passive: true, capture: true });
+  document.addEventListener("pointermove", notePointer, { passive: true, capture: true });
+
   document.addEventListener("mousemove", (e) => {
+    if (lastPointerType === "touch") return;
     lastMouse.x = e.clientX;
     lastMouse.y = e.clientY;
     onPointerMove(e.clientX, e.clientY);
@@ -2182,6 +2328,7 @@
 
   // ---- delegated hover handling ----------------------------------------
   document.addEventListener("mouseover", (e) => {
+    if (lastPointerType === "touch") return;
     const card = e.target.closest(CARD_SELECTOR);
     if (!card || card.contains(e.relatedTarget)) return;
     const typeInfo = resolveTypeConfig(card);
@@ -2282,4 +2429,22 @@
   }, { passive: true, capture: true });
 
   window.addEventListener("resize", queueReposition);
+
+  // ---- close on navigation ----------------------------------------------
+  // A fan left open would stay (fixed, z-index 9999) over the next page or
+  // the video player. Jellyfin mostly navigates with history.pushState,
+  // which fires no 'hashchange', so the URL is also polled.
+  let lastHref = window.location.href;
+  function onNavigate() {
+    if (window.location.href === lastHref) return;
+    lastHref = window.location.href;
+    clearActive(true);
+    if (zoneCard) {
+      clearTimeout(hoverTimers.get(zoneCard));
+      zoneCard = null;
+    }
+  }
+  window.addEventListener("hashchange", onNavigate);
+  window.addEventListener("popstate", onNavigate);
+  setInterval(onNavigate, 200);
 })();
